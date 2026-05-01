@@ -765,7 +765,7 @@ def build_revenue_csv_markdown(company_label: str, csv_text: str, chart_title: s
 def find_revenue_highcharts_csv(page, keyword: str = REVENUE_CHART_KEYWORD) -> dict:
     try:
         result = page.evaluate(
-            """
+            r"""
             (keyword) => {
                 const hc = window.Highcharts;
                 if (!hc || !hc.charts) return {ok:false, error:'Highcharts not found'};
