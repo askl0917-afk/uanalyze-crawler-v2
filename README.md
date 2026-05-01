@@ -1,11 +1,6 @@
-# UAnalyze 產業情報小助理爬蟲（longrun enterfix safe）
+# UAnalyze Crawler v2 Revenue CSV
 
-這版是從可正常部署的 `uanalyze-crawler-app-longrun.zip` 回退修改：
-
-- requirements.txt 回復為原本可用版本：streamlit + playwright
-- packages.txt 回復為原本可用版本：chromium + chromium-driver
-- 股票欄位只輸入數字，例如 3030
-- 輸入股票代號後會按 Enter 確認
-- 如果頁面仍停在原股票，會提示不要繼續爬錯公司
-
-手機操作：輸入 Email、密碼、股票代號、選欄位，按一次開始。
+- 第一區塊：維持原本產業情報欄位長時間爬蟲。
+- 第二區塊：在同一次已登入、已切換股票代號的頁面中，擷取「累計月營收追蹤(實際營收vs法人vs我的預估)-新版」CSV。
+- 股票代號欄位只輸入數字，例如 3030。
+- 第二區塊不會重新登入、不會重新輸入股票代號；按第一區塊開始後會接續擷取。

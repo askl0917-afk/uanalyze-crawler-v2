@@ -736,12 +736,108 @@ def write_run_files(run_dir: Path, company_label: str, topic_results: list, fina
     return all_md
 
 
+
+# -----------------------------
+# Revenue CSV helpers（第二區塊專用；不改第一區塊爬蟲流程）
+# -----------------------------
+
+REVENUE_CHART_KEYWORD = "累計月營收追蹤"
+
+
+def build_revenue_csv_markdown(company_label: str, csv_text: str, chart_title: str, page_title: str, page_url: str, method: str) -> str:
+    return "\n".join([
+        "# UAnalyze 累計月營收追蹤 CSV 擷取結果",
+        "",
+        f"- 公司：{company_label}",
+        f"- 擷取時間：{human_now()}",
+        f"- 頁面標題：{page_title}",
+        f"- 頁面網址：{page_url}",
+        f"- 圖表標題：{chart_title}",
+        f"- 擷取方式：{method}",
+        "",
+        "---",
+        "",
+        csv_text or "",
+        "",
+    ])
+
+
+def find_revenue_highcharts_csv(page, keyword: str = REVENUE_CHART_KEYWORD) -> dict:
+    try:
+        result = page.evaluate(
+            """
+            (keyword) => {
+                const hc = window.Highcharts;
+                if (!hc || !hc.charts) return {ok:false, error:'Highcharts not found'};
+                const charts = hc.charts.map((chart, index) => ({chart, index})).filter(x => x.chart);
+                const candidates = charts.map(x => {
+                    const c = x.chart;
+                    const title = (c.title && (c.title.textStr || c.title.element?.textContent)) || '';
+                    const subtitle = (c.subtitle && (c.subtitle.textStr || c.subtitle.element?.textContent)) || '';
+                    const renderText = (c.renderTo && c.renderTo.innerText) || '';
+                    return {index:x.index, title, subtitle, renderText, haystack:[title, subtitle, renderText].join('\n')};
+                });
+                const target = candidates.find(x => x.haystack.includes(keyword));
+                if (!target) return {ok:false, error:'target chart not found', charts:candidates.map(x => ({index:x.index, title:x.title, subtitle:x.subtitle, text:x.renderText.slice(0,120)}))};
+                const chart = hc.charts[target.index];
+                if (typeof chart.getCSV === 'function') {
+                    const csv = chart.getCSV();
+                    return {ok:true, csv, chart_title: target.title || target.subtitle || keyword, chart_index: target.index, method:'Highcharts.getCSV'};
+                }
+                if (typeof chart.getDataRows === 'function') {
+                    const rows = chart.getDataRows();
+                    const escapeCell = (value) => {
+                        if (value === null || value === undefined) return '';
+                        const s = String(value);
+                        if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+                        return s;
+                    };
+                    const csv = rows.map(row => row.map(escapeCell).join(',')).join('\n');
+                    return {ok:true, csv, chart_title: target.title || target.subtitle || keyword, chart_index: target.index, method:'Highcharts.getDataRows'};
+                }
+                return {ok:false, error:'target chart found but CSV API unavailable', chart_index: target.index, chart_title: target.title || keyword};
+            }
+            """,
+            keyword,
+        )
+        if isinstance(result, dict):
+            return result
+        return {"ok": False, "error": "unexpected JS result"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def get_revenue_csv_with_scroll(page, keyword: str = REVENUE_CHART_KEYWORD) -> dict:
+    last = {"ok": False, "error": "not started"}
+    try:
+        page.wait_for_timeout(2500)
+    except Exception:
+        pass
+    for y in [0, 450, 900, 1350, 1800, 2300, 2800, 3400, 4000, 4700, 5400, 6200, 7000]:
+        try:
+            page.evaluate("(y) => window.scrollTo(0, y)", y)
+            page.wait_for_timeout(1800)
+        except Exception:
+            pass
+        last = find_revenue_highcharts_csv(page, keyword)
+        if last.get("ok") and (last.get("csv") or "").strip():
+            last["scroll_y"] = y
+            return last
+    return last
+
+
+def write_revenue_run_files(run_dir: Path, company_label: str, csv_text: str, markdown_text: str, debug: dict):
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "revenue_tracking.csv").write_text(csv_text or "", encoding="utf-8")
+    (run_dir / "revenue_tracking.md").write_text(markdown_text or "", encoding="utf-8")
+    (run_dir / "debug_info.json").write_text(json.dumps(debug, ensure_ascii=False, indent=2), encoding="utf-8")
+
 # -----------------------------
 # Page UI
 # -----------------------------
 
-st.title("UAnalyze 產業情報小助理：長時間爬蟲版（股票代號 Enter 修正版）")
-st.caption("適合一次爬多個欄位。股票欄位只填數字；切換股票時會輸入代號後直接按 Enter，並檢查是否仍停在台泥。")
+st.title("UAnalyze 產業情報小助理：v2 測試版")
+st.caption("第一區塊維持原本穩定爬蟲；第二區塊新增累計月營收追蹤 CSV 擷取。兩個區塊共用同一組 Email、密碼、股票代號。")
 
 with st.expander("登入與爬蟲設定", expanded=True):
     login_url = st.text_input("UAnalyze 登入頁網址", value="https://pro.uanalyze.com.tw/login-page")
@@ -780,6 +876,19 @@ if latest_runs:
                     file_name=f"{run_dir.name}.zip",
                     mime="application/zip",
                     key=f"zip_{run_dir.name}",
+                )
+
+            rev_csv_path = run_dir / "revenue_tracking.csv"
+            if rev_csv_path.exists() and rev_csv_path.read_text(encoding="utf-8").strip():
+                rev_csv = rev_csv_path.read_text(encoding="utf-8")
+                st.write(f"累計月營收 CSV：`{run_dir.name}`")
+                copy_button(rev_csv, f"一鍵複製累計月營收 CSV：{run_dir.name}")
+                st.download_button(
+                    label=f"下載累計月營收 CSV：{run_dir.name}",
+                    data=rev_csv.encode("utf-8-sig"),
+                    file_name=f"{run_dir.name}_revenue_tracking.csv",
+                    mime="text/csv",
+                    key=f"rev_csv_{run_dir.name}",
                 )
 
 
@@ -822,6 +931,10 @@ if st.button("開始長時間爬取產業情報欄位"):
             (run_dir / "run_log.txt").write_text("\n".join(logs), encoding="utf-8")
         except Exception:
             pass
+
+    revenue_csv_text = ""
+    revenue_markdown_text = ""
+    revenue_debug_meta = {}
 
     try:
         from playwright.sync_api import sync_playwright
@@ -1010,12 +1123,46 @@ if st.button("開始長時間爬取產業情報欄位"):
                 progress.progress(min(progress_value, 95))
                 log(f"完成欄位：{topic}")
 
+            # 第二區塊資料：沿用同一個已登入、已切換股票代號的頁面，不重新登入、不重新輸入股票代號。
+            try:
+                status_box.write("第二區塊：同一次頁面擷取累計月營收 CSV...")
+                log("第二區塊：同一次頁面擷取累計月營收 CSV")
+                csv_result = get_revenue_csv_with_scroll(page, REVENUE_CHART_KEYWORD)
+                revenue_debug_meta = {k: v for k, v in csv_result.items() if k != "csv"}
+                debug["revenue_csv_result_meta"] = revenue_debug_meta
+
+                if csv_result.get("ok") and (csv_result.get("csv") or "").strip():
+                    revenue_csv_text = csv_result.get("csv") or ""
+                    revenue_markdown_text = build_revenue_csv_markdown(
+                        company_label,
+                        revenue_csv_text,
+                        csv_result.get("chart_title") or REVENUE_CHART_KEYWORD,
+                        page.title(),
+                        page.url,
+                        csv_result.get("method") or "Highcharts CSV",
+                    )
+                    write_revenue_run_files(run_dir, company_label, revenue_csv_text, revenue_markdown_text, debug)
+                    log("第二區塊完成：累計月營收 CSV 已取得")
+                else:
+                    debug["revenue_csv_failed"] = revenue_debug_meta
+                    (run_dir / "revenue_csv_failed.json").write_text(json.dumps(revenue_debug_meta, ensure_ascii=False, indent=2), encoding="utf-8")
+                    log("第二區塊未成功取得 CSV：" + str(revenue_debug_meta)[:180])
+            except Exception as e:
+                debug["revenue_csv_exception"] = str(e)
+                try:
+                    (run_dir / "revenue_csv_error.txt").write_text(str(e), encoding="utf-8")
+                except Exception:
+                    pass
+                log("第二區塊發生錯誤：" + str(e)[:180])
+
             final_title = page.title()
             final_url = page.url
             browser.close()
 
         debug["finished_at"] = human_now()
         result_markdown = write_run_files(run_dir, company_label, topic_results, final_title, final_url, debug)
+        if revenue_csv_text.strip():
+            write_revenue_run_files(run_dir, company_label, revenue_csv_text, revenue_markdown_text, debug)
 
         progress.progress(100)
         status_box.write("完成。")
@@ -1048,6 +1195,20 @@ if st.button("開始長時間爬取產業情報欄位"):
             mime="text/markdown",
         )
 
+        st.subheader("第二區塊：累計月營收追蹤 CSV")
+        if revenue_csv_text.strip():
+            st.success("已使用同一次登入、同一次股票切換的頁面取得累計月營收 CSV。")
+            copy_button(revenue_csv_text, "一鍵複製累計月營收 CSV")
+            st.text_area("累計月營收 CSV", revenue_csv_text, height=420)
+            st.download_button(
+                label="下載累計月營收 CSV",
+                data=revenue_csv_text.encode("utf-8-sig"),
+                file_name=f"{run_id}_revenue_tracking.csv",
+                mime="text/csv",
+            )
+        else:
+            st.warning("本次沒有成功取得累計月營收 CSV。請下載 ZIP，裡面會有 revenue_csv_failed.json 或 revenue_csv_error.txt 供診斷。")
+
     except Exception as e:
         st.error("爬取流程失敗。")
         st.exception(e)
@@ -1062,3 +1223,29 @@ if st.button("開始長時間爬取產業情報欄位"):
                 file_name=f"{run_id}_partial.zip",
                 mime="application/zip",
             )
+
+st.divider()
+st.header("第二區塊：累計月營收追蹤 CSV")
+st.caption("這個區塊不會再重新登入、不會再重新輸入股票代號。按上方第一區塊開始爬蟲後，程式會在同一個已登入、已切換股票的頁面，接著擷取累計月營收追蹤 CSV；完成後這裡可從最近結果一鍵複製。")
+
+latest_revenue = None
+for rd in latest_run_dirs(limit=10):
+    csv_path = rd / "revenue_tracking.csv"
+    if csv_path.exists() and csv_path.read_text(encoding="utf-8").strip():
+        latest_revenue = (rd, csv_path.read_text(encoding="utf-8"))
+        break
+
+if latest_revenue:
+    rd, rev_csv = latest_revenue
+    st.success(f"已找到最近一次累計月營收 CSV：{rd.name}")
+    copy_button(rev_csv, "一鍵複製最近一次累計月營收 CSV")
+    st.text_area("最近一次累計月營收 CSV", rev_csv, height=420)
+    st.download_button(
+        label="下載最近一次累計月營收 CSV",
+        data=rev_csv.encode("utf-8-sig"),
+        file_name=f"{rd.name}_revenue_tracking.csv",
+        mime="text/csv",
+        key="download_latest_revenue_csv",
+    )
+else:
+    st.info("目前還沒有累計月營收 CSV。請先按上方『開始長時間爬取產業情報欄位』，完成後會在同一次頁面自動抓取。")
