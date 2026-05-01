@@ -1498,56 +1498,131 @@ def try_highcharts_csv_api_multi(page, spec: dict) -> dict:
 
 
 
+
 def install_browser_download_capture_patch(page) -> dict:
-    """在頁面裡攔截 Highcharts 產生的 a[download] / blob / data URL。避免手機雲端環境 download event 抓不到。"""
+    """在頁面內攔截 Highcharts 下載 CSV 產生的 data/blob URL。
+    重點：不點「顯示數值」，只攔截「下載為 CSV 檔」本身產生的檔案內容。
+    """
     try:
         return page.evaluate(
             r"""
             () => {
                 window.__uanalyzeDownloads = [];
-                window.__uanalyzeBlobTexts = window.__uanalyzeBlobTexts || {};
-                if (!window.__uanalyzeDownloadPatchInstalled) {
-                    window.__uanalyzeDownloadPatchInstalled = true;
+                window.__uanalyzeBlobTexts = {};
+                window.__uanalyzeLastCsvText = '';
+                window.__uanalyzeLastCsvFilename = '';
+
+                function pushDownload(d) {
+                    try {
+                        d.ts = Date.now();
+                        window.__uanalyzeDownloads.push(d);
+                    } catch(e) {}
+                }
+
+                function looksCsvText(t) {
+                    if (!t || typeof t !== 'string') return false;
+                    const head = t.slice(0, 800);
+                    return head.includes(',') || head.includes('\n') || head.includes('Date') || head.includes('日期') || head.includes('營收') || head.includes('EPS') || head.includes('毛利') || head.includes('存貨') || head.includes('合約負債');
+                }
+
+                function decodeDataUrl(href) {
+                    try {
+                        const comma = href.indexOf(',');
+                        if (comma < 0) return '';
+                        const meta = href.slice(5, comma);
+                        const payload = href.slice(comma + 1);
+                        if (meta.includes(';base64')) {
+                            try {
+                                return new TextDecoder('utf-8').decode(Uint8Array.from(atob(payload), c => c.charCodeAt(0)));
+                            } catch(e) { return atob(payload); }
+                        }
+                        return decodeURIComponent(payload);
+                    } catch(e) { return ''; }
+                }
+
+                if (!window.__uanalyzeDownloadPatchInstalledV2) {
+                    window.__uanalyzeDownloadPatchInstalledV2 = true;
+
                     const origCreateObjectURL = URL.createObjectURL.bind(URL);
                     URL.createObjectURL = function(obj) {
                         const url = origCreateObjectURL(obj);
                         try {
                             if (obj && typeof obj.text === 'function') {
+                                const meta = {url, type:obj.type || '', size:obj.size || 0, source:'URL.createObjectURL'};
                                 obj.text().then(t => {
-                                    window.__uanalyzeBlobTexts[url] = {text:t, type:obj.type || '', size:obj.size || 0, ts:Date.now()};
+                                    window.__uanalyzeBlobTexts[url] = {...meta, text:t, ts:Date.now()};
+                                    if (looksCsvText(t)) {
+                                        window.__uanalyzeLastCsvText = t;
+                                        pushDownload({href:url, download:window.__uanalyzeLastCsvFilename || '', source:'blob.text', type:obj.type || '', size:obj.size || 0});
+                                    }
                                 }).catch(e => {
-                                    window.__uanalyzeBlobTexts[url] = {error:String(e), ts:Date.now()};
+                                    window.__uanalyzeBlobTexts[url] = {...meta, error:String(e), ts:Date.now()};
                                 });
                             }
                         } catch(e) {}
                         return url;
                     };
+
                     const origAnchorClick = HTMLAnchorElement.prototype.click;
                     HTMLAnchorElement.prototype.click = function() {
                         try {
                             const href = this.href || this.getAttribute('href') || '';
                             const download = this.download || this.getAttribute('download') || '';
-                            if (href || download) {
-                                window.__uanalyzeDownloads.push({href, download, ts:Date.now(), source:'anchor.click'});
+                            if (download) window.__uanalyzeLastCsvFilename = download;
+                            pushDownload({href, download, source:'HTMLAnchorElement.click'});
+                            if (href.startsWith('data:')) {
+                                const text = decodeDataUrl(href);
+                                if (looksCsvText(text)) window.__uanalyzeLastCsvText = text;
+                            } else if (href.startsWith('blob:')) {
+                                setTimeout(async () => {
+                                    try {
+                                        const resp = await fetch(href);
+                                        const text = await resp.text();
+                                        window.__uanalyzeBlobTexts[href] = {text, ts:Date.now(), source:'anchor.blob.fetch'};
+                                        if (looksCsvText(text)) window.__uanalyzeLastCsvText = text;
+                                    } catch(e) {}
+                                }, 0);
                             }
                         } catch(e) {}
                         return origAnchorClick.apply(this, arguments);
                     };
+
+                    const origSetAttribute = Element.prototype.setAttribute;
+                    Element.prototype.setAttribute = function(name, value) {
+                        try {
+                            if (this && this.tagName === 'A') {
+                                const n = String(name || '').toLowerCase();
+                                if (n === 'download') window.__uanalyzeLastCsvFilename = String(value || '');
+                            }
+                        } catch(e) {}
+                        return origSetAttribute.apply(this, arguments);
+                    };
+
                     const origAppendChild = Node.prototype.appendChild;
                     Node.prototype.appendChild = function(child) {
                         try {
                             if (child && child.tagName === 'A') {
                                 const href = child.href || child.getAttribute('href') || '';
                                 const download = child.download || child.getAttribute('download') || '';
-                                if (href || download) {
-                                    window.__uanalyzeDownloads.push({href, download, ts:Date.now(), source:'appendChild(a)'});
-                                }
+                                if (download) window.__uanalyzeLastCsvFilename = download;
+                                if (href || download) pushDownload({href, download, source:'Node.appendChild(a)'});
                             }
                         } catch(e) {}
                         return origAppendChild.apply(this, arguments);
                     };
+
+                    document.addEventListener('click', function(ev) {
+                        try {
+                            const a = ev.target && ev.target.closest ? ev.target.closest('a') : null;
+                            if (!a) return;
+                            const href = a.href || a.getAttribute('href') || '';
+                            const download = a.download || a.getAttribute('download') || '';
+                            if (download) window.__uanalyzeLastCsvFilename = download;
+                            if (href || download) pushDownload({href, download, source:'document.click.capture'});
+                        } catch(e) {}
+                    }, true);
                 }
-                return {ok:true, patched:true};
+                return {ok:true, patched:true, version:'downloadfix-v2'};
             }
             """
         )
@@ -1556,12 +1631,14 @@ def install_browser_download_capture_patch(page) -> dict:
 
 
 def click_csv_menu_item_by_js_capture(page) -> dict:
-    """用 DOM 事件點 CSV，不走 Playwright actionability；可避開 locator.click 被浮層/座標判定卡住。"""
+    """只點「下載為 CSV 檔」。不用顯示數值、不解析圖片。"""
     try:
         return page.evaluate(
             r"""
             () => {
                 window.__uanalyzeDownloads = [];
+                window.__uanalyzeBlobTexts = {};
+                window.__uanalyzeLastCsvText = '';
                 function txt(el){ return (el.innerText || el.textContent || '').trim(); }
                 const items = Array.from(document.querySelectorAll('.highcharts-menu-item'));
                 const menuItems = items.map((el, index) => txt(el));
@@ -1571,13 +1648,18 @@ def click_csv_menu_item_by_js_capture(page) -> dict:
                     return u.includes('CSV') && (u.includes('DOWNLOAD') || t.includes('下載') || t.includes('匯出'));
                 });
                 if (!target) return {ok:false, error:'csv menu item not found by js', menuItems};
-                const r = target.getBoundingClientRect();
                 try { target.scrollIntoView({block:'center', inline:'center'}); } catch(e) {}
-                const opts = {bubbles:true, cancelable:true, view:window, clientX:r.left+r.width/2, clientY:r.top+r.height/2};
-                try { target.dispatchEvent(new MouseEvent('mouseover', opts)); } catch(e) {}
-                try { target.dispatchEvent(new MouseEvent('mousedown', opts)); } catch(e) {}
-                try { target.dispatchEvent(new MouseEvent('mouseup', opts)); } catch(e) {}
-                try { target.dispatchEvent(new MouseEvent('click', opts)); } catch(e) {}
+                const r = target.getBoundingClientRect();
+                const x = r.left + r.width / 2;
+                const y = r.top + r.height / 2;
+                const opts = {bubbles:true, cancelable:true, composed:true, view:window, clientX:x, clientY:y, button:0};
+                const events = ['pointerover','pointerenter','mouseover','mouseenter','pointerdown','mousedown','pointerup','mouseup','click'];
+                for (const name of events) {
+                    try {
+                        const Ev = name.startsWith('pointer') && window.PointerEvent ? PointerEvent : MouseEvent;
+                        target.dispatchEvent(new Ev(name, opts));
+                    } catch(e) {}
+                }
                 try { target.click(); } catch(e) {}
                 return {ok:true, text:txt(target), rect:{top:r.top,left:r.left,width:r.width,height:r.height,bottom:r.bottom,right:r.right}, menuItems};
             }
@@ -1587,8 +1669,8 @@ def click_csv_menu_item_by_js_capture(page) -> dict:
         return {"ok": False, "error": str(e)[:260]}
 
 
-def read_captured_browser_download(page, timeout_ms: int = 9000) -> dict:
-    """讀取剛剛 Highcharts 產生的 CSV。支援 data: URL、blob: URL、以及 createObjectURL 攔截到的 Blob 文字。"""
+def read_captured_browser_download(page, timeout_ms: int = 12000) -> dict:
+    """讀取剛剛 CSV 下載產生的文字。不依賴 Playwright download event。"""
     try:
         end = time.time() + timeout_ms / 1000
         last = None
@@ -1598,8 +1680,13 @@ def read_captured_browser_download(page, timeout_ms: int = 9000) -> dict:
                 async () => {
                     const downloads = window.__uanalyzeDownloads || [];
                     const blobTexts = window.__uanalyzeBlobTexts || {};
-                    if (!downloads.length) return {ok:false, waiting:'no captured download yet', downloads:[]};
-                    const d = downloads[downloads.length - 1];
+                    const lastCsvText = window.__uanalyzeLastCsvText || '';
+                    const lastCsvFilename = window.__uanalyzeLastCsvFilename || '';
+                    if (lastCsvText && String(lastCsvText).trim()) {
+                        return {ok:true, text:lastCsvText, filename:lastCsvFilename, method:'captured csv text from page hook', downloads};
+                    }
+                    const d = downloads.length ? downloads[downloads.length - 1] : null;
+                    if (!d) return {ok:false, waiting:'no captured download yet', downloads:[]};
                     const href = d.href || '';
                     try {
                         if (href.startsWith('data:')) {
@@ -1613,37 +1700,164 @@ def read_captured_browser_download(page, timeout_ms: int = 9000) -> dict:
                             } else {
                                 text = decodeURIComponent(payload);
                             }
-                            return {ok:true, text, filename:d.download || '', method:'captured data url', download:d};
+                            return {ok:true, text, filename:d.download || lastCsvFilename || '', method:'captured data url', download:d, downloads};
                         }
                         if (href.startsWith('blob:')) {
                             if (blobTexts[href] && blobTexts[href].text) {
-                                return {ok:true, text:blobTexts[href].text, filename:d.download || '', method:'captured blob text cache', download:d};
+                                return {ok:true, text:blobTexts[href].text, filename:d.download || lastCsvFilename || '', method:'captured blob text cache', download:d, downloads};
                             }
                             try {
                                 const resp = await fetch(href);
                                 const text = await resp.text();
-                                if (text) return {ok:true, text, filename:d.download || '', method:'captured blob fetch', download:d};
+                                if (text) return {ok:true, text, filename:d.download || lastCsvFilename || '', method:'captured blob fetch', download:d, downloads};
                             } catch(e) {
-                                return {ok:false, waiting:'blob fetch failed', error:String(e), download:d, blobText:blobTexts[href] || null};
+                                return {ok:false, waiting:'blob fetch failed', error:String(e), download:d, blobText:blobTexts[href] || null, downloads};
                             }
-                            return {ok:false, waiting:'blob exists but text not ready', download:d, blobText:blobTexts[href] || null};
+                            return {ok:false, waiting:'blob exists but text not ready', download:d, blobText:blobTexts[href] || null, downloads};
                         }
-                        if (href) {
-                            return {ok:false, waiting:'captured href is not data/blob', download:d};
-                        }
-                        return {ok:false, waiting:'captured download without href', download:d};
+                        return {ok:false, waiting: href ? 'captured href is not data/blob' : 'captured download without href', download:d, downloads};
                     } catch(e) {
-                        return {ok:false, error:String(e), download:d};
+                        return {ok:false, error:String(e), download:d, downloads};
                     }
                 }
                 """
             )
             if isinstance(last, dict) and last.get("ok") and (last.get("text") or "").strip():
                 return last
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(400)
         return last if isinstance(last, dict) else {"ok": False, "error": "no captured download result"}
     except Exception as e:
         return {"ok": False, "error": str(e)[:260]}
+
+
+def click_show_data_and_parse_table_multi(page, spec: dict, coord: dict, scroll_meta: dict, pre_click_meta=None, patch_meta=None) -> dict:
+    """Highcharts 在 Streamlit Cloud headless 有時不會產生 Playwright download event。
+    這個備援不下載檔案，而是點選單的「顯示數值」，讓 Highcharts 把資料表渲染到 DOM，
+    再把 table 轉成 CSV。這比抓瀏覽器下載事件穩定。
+    """
+    try:
+        # 先清掉上一張圖可能留下的資料表，避免解析到舊表。
+        page.evaluate("""
+        () => {
+            document.querySelectorAll('.highcharts-data-table').forEach(el => el.remove());
+        }
+        """)
+    except Exception:
+        pass
+
+    try:
+        # 確保選單打開。
+        try:
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(250)
+        except Exception:
+            pass
+        page.mouse.click(coord["x"], coord["y"])
+        page.wait_for_timeout(700)
+    except Exception as e:
+        return {"ok": False, "error": "open menu for show data failed: " + str(e)[:220]}
+
+    menu_items = []
+    try:
+        click_meta = page.evaluate(
+            r"""
+            () => {
+                function txt(el){ return (el.innerText || el.textContent || '').trim(); }
+                const items = Array.from(document.querySelectorAll('.highcharts-menu-item'));
+                const menuItems = items.map((el, index) => ({index, text:txt(el)}));
+                const target = items.find(el => {
+                    const t = txt(el);
+                    return t.includes('顯示數值') || t.toLowerCase().includes('view data') || t.toLowerCase().includes('show data');
+                });
+                if (!target) return {ok:false, error:'show data menu item not found', menuItems};
+                const r = target.getBoundingClientRect();
+                try { target.scrollIntoView({block:'center', inline:'center'}); } catch(e) {}
+                const opts = {bubbles:true, cancelable:true, view:window, clientX:r.left+r.width/2, clientY:r.top+r.height/2};
+                try { target.dispatchEvent(new MouseEvent('mouseover', opts)); } catch(e) {}
+                try { target.dispatchEvent(new MouseEvent('mousedown', opts)); } catch(e) {}
+                try { target.dispatchEvent(new MouseEvent('mouseup', opts)); } catch(e) {}
+                try { target.dispatchEvent(new MouseEvent('click', opts)); } catch(e) {}
+                try { target.click(); } catch(e) {}
+                return {ok:true, text:txt(target), rect:{top:r.top,left:r.left,width:r.width,height:r.height,bottom:r.bottom,right:r.right}, menuItems};
+            }
+            """
+        )
+        if isinstance(click_meta, dict):
+            menu_items = [x.get('text','') for x in click_meta.get('menuItems', []) if x.get('text')]
+            if not click_meta.get('ok'):
+                return {"ok": False, "error": click_meta.get("error") or "show data click failed", "menu_items": menu_items, "click_meta": click_meta}
+    except Exception as e:
+        return {"ok": False, "error": "show data JS click failed: " + str(e)[:260], "menu_items": menu_items}
+
+    try:
+        page.wait_for_timeout(1600)
+    except Exception:
+        pass
+
+    try:
+        parsed = page.evaluate(
+            r"""
+            (spec) => {
+                const keyword = spec.keyword || spec.label || '';
+                const matchKeywords = [keyword].concat(spec.match_keywords || []).filter(Boolean);
+                const excludeKeywords = spec.exclude_keywords || [];
+                function txt(el){ return (el.innerText || el.textContent || '').trim(); }
+                function rect(el){ const r=el.getBoundingClientRect(); return {top:r.top,left:r.left,width:r.width,height:r.height,bottom:r.bottom,right:r.right,x:r.left+r.width/2,y:r.top+r.height/2}; }
+                function esc(v){
+                    if (v === null || v === undefined) return '';
+                    const s = String(v).replace(/\r\n/g,'\n').replace(/\r/g,'\n').trim();
+                    if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+                    return s;
+                }
+                const tables = Array.from(document.querySelectorAll('.highcharts-data-table table, table'))
+                    .map((table, index) => {
+                        const text = txt(table);
+                        const r = rect(table);
+                        let score = 0;
+                        for (const kw of matchKeywords) if (kw && text.includes(kw)) score += (kw === keyword ? 1000 : 220);
+                        for (const ex of excludeKeywords) if (ex && text.includes(ex)) score -= 260;
+                        if (table.closest('.highcharts-data-table')) score += 500;
+                        if (text.length > 20) score += 50;
+                        return {table, index, text:text.slice(0,360), rect:r, score};
+                    })
+                    .filter(x => x.text && x.score > 0)
+                    .sort((a,b)=>b.score-a.score || b.text.length-a.text.length);
+                const target = tables[0];
+                if (!target) {
+                    const all = Array.from(document.querySelectorAll('.highcharts-data-table table, table')).map((table,index)=>({index,text:txt(table).slice(0,240), rect:rect(table)}));
+                    return {ok:false, error:'data table not found after show data', tables:all.slice(0,8)};
+                }
+                const rows = Array.from(target.table.querySelectorAll('tr')).map(tr =>
+                    Array.from(tr.querySelectorAll('th,td')).map(cell => esc(txt(cell)))
+                ).filter(row => row.length);
+                if (!rows.length) return {ok:false, error:'data table has no rows', target:{score:target.score,text:target.text,rect:target.rect}};
+                const csv = rows.map(row => row.join(',')).join('\n');
+                return {ok:true, csv, method:'Highcharts show data table -> DOM table -> CSV', target:{score:target.score,text:target.text,rect:target.rect}, row_count:rows.length};
+            }
+            """,
+            spec,
+        )
+        try:
+            page.keyboard.press("Escape")
+        except Exception:
+            pass
+        if isinstance(parsed, dict) and parsed.get("ok") and (parsed.get("csv") or "").strip():
+            return {
+                "ok": True,
+                "csv": parsed.get("csv") or "",
+                "chart_title": spec.get("label") or spec.get("keyword"),
+                "method": parsed.get("method") or "Highcharts show data table",
+                "scroll_meta": scroll_meta,
+                "pre_click_meta": pre_click_meta,
+                "patch_meta": patch_meta,
+                "coord": coord,
+                "menu_items": menu_items,
+                "table_meta": {k:v for k,v in parsed.items() if k != "csv"},
+                "suggested_filename": "",
+            }
+        return {"ok": False, "error": (parsed or {}).get("error") if isinstance(parsed, dict) else "table parse failed", "menu_items": menu_items, "table_meta": parsed}
+    except Exception as e:
+        return {"ok": False, "error": "parse shown data table failed: " + str(e)[:260], "menu_items": menu_items}
 
 def download_chart_csv_via_menu_multi(page, spec: dict) -> dict:
     scroll_meta = scroll_chart_section_into_view_multi(page, spec)
@@ -1987,8 +2201,8 @@ def run_second_block_csvs_only(login_url: str, email: str, password: str, stock_
 # Page UI
 # -----------------------------
 
-st.title("UAnalyze 產業情報小助理：v2 測試版 multi-csv")
-st.caption("第一區塊維持原本穩定爬蟲；第二區塊可獨立一次下載多張圖表 CSV。兩個區塊共用同一組 Email、密碼、股票代號。")
+st.title("UAnalyze 產業情報小助理：v2 測試版 multi-csv tablefix")
+st.caption("第一區塊維持原本穩定爬蟲；第二區塊可獨立一次下載多張圖表 CSV。若下載事件抓不到，會改用「顯示數值」資料表轉 CSV。")
 
 with st.expander("登入與爬蟲設定", expanded=True):
     login_url = st.text_input("UAnalyze 登入頁網址", value="https://pro.uanalyze.com.tw/login-page")
