@@ -752,161 +752,146 @@ def choose_stock_in_database(page, stock_code: str) -> List[str]:
     return actions
 
 
-def is_product_intro_or_catalog_page(page) -> bool:
-    """產品介紹 / 商城目錄不是個股逐字稿頁；這些頁面不能被當成功。"""
+def click_transcript_tab(page) -> List[str]:
+    """只操作上方橫向功能列的「⭐逐字稿」，不要點到正文的產品說明。"""
+    actions: List[str] = []
+
+    def click_visible_top_tab(tag: str) -> bool:
+        try:
+            clicked = page.evaluate(
+                """
+                () => {
+                  function visible(el){
+                    const r=el.getBoundingClientRect(); const s=getComputedStyle(el);
+                    return r.width>5 && r.height>5 && s.display!=='none' && s.visibility!=='hidden' && s.opacity!=='0' && r.bottom>0 && r.top<window.innerHeight;
+                  }
+                  function norm(t){ return (t||'').replace(/\s+/g,'').trim(); }
+                  const nodes = Array.from(document.querySelectorAll('a,button,[role="button"],.v-tab,.v-btn,div,span,li'))
+                    .filter(visible)
+                    .map(el => { const r=el.getBoundingClientRect(); const a=el.closest('a'); const text=(el.innerText||'').replace(/\s+/g,' ').trim(); return {el, text, n:norm(text), top:r.top, left:r.left, width:r.width, height:r.height, href:a?a.href:''}; })
+                    .filter(x => x.top >= 0 && x.top < 125)
+                    .filter(x => x.n === '⭐逐字稿' || x.n === '逐字稿' || x.n.endsWith('逐字稿'))
+                    .filter(x => !/[：:]20\d{2}/.test(x.text))
+                    .filter(x => !x.text.includes('獨家提供') && !x.text.includes('法說會全文'))
+                    .filter(x => !x.href.includes('/e-com/'))
+                    .sort((a,b) => (a.n === '⭐逐字稿' ? -100 : 0) - (b.n === '⭐逐字稿' ? -100 : 0) || a.top-b.top || a.left-b.left);
+                  if(!nodes.length) return {ok:false, reason:'no visible top tab'};
+                  const t = nodes[0];
+                  const clickEl = t.el.closest('a,button,[role="button"],.v-tab,.v-btn') || t.el;
+                  clickEl.click();
+                  return {ok:true, text:t.text, top:t.top, left:t.left, href:t.href};
+                }
+                """
+            )
+            actions.append(f"click top transcript tab {tag}: " + json.dumps(clicked, ensure_ascii=False)[:500])
+            if isinstance(clicked, dict) and clicked.get("ok"):
+                page.wait_for_timeout(5000)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=20000)
+                except Exception:
+                    pass
+                return True
+        except Exception as e:
+            actions.append(f"click top transcript tab failed {tag}: {str(e)[:120]}")
+        return False
+
+    if click_visible_top_tab("visible"):
+        return actions
+
+    # 上方 bar 是水平捲動；逐段 scrollLeft 後再找「⭐逐字稿」。
+    for pos in [0, 160, 320, 520, 760, 1000, 1300, 1700, 2200]:
+        try:
+            scrolled = page.evaluate(
+                """
+                (pos) => {
+                  function box(el){ const r=el.getBoundingClientRect(); const s=getComputedStyle(el); return r.width>120 && r.height>20 && r.top>=0 && r.top<125 && s.display!=='none' && s.visibility!=='hidden'; }
+                  let n=0;
+                  for (const el of Array.from(document.querySelectorAll('*'))) {
+                    const txt=(el.innerText||'');
+                    if (box(el) && el.scrollWidth > el.clientWidth + 30 && (txt.includes('自動導航') || txt.includes('企業透視') || txt.includes('小助理') || txt.includes('逐字稿'))) { el.scrollLeft = pos; n += 1; }
+                  }
+                  return n;
+                }
+                """,
+                pos,
+            )
+            actions.append(f"scroll top nav pos={pos}, containers={scrolled}")
+            page.wait_for_timeout(900)
+            if click_visible_top_tab(f"scrollLeft={pos}"):
+                return actions
+        except Exception as e:
+            actions.append(f"scroll top nav failed pos={pos}: {str(e)[:80]}")
+
+    # 備援：模擬手指左右滑上方 tab。
+    for i in range(7):
+        try:
+            page.mouse.move(390, 52); page.mouse.down(); page.mouse.move(80, 52, steps=18); page.mouse.up()
+            page.wait_for_timeout(900)
+            if click_visible_top_tab(f"drag-{i+1}"):
+                return actions
+        except Exception as e:
+            actions.append(f"drag top nav failed {i+1}: {str(e)[:80]}")
+    return actions
+
+
+def looks_like_intro_or_product_page(page) -> bool:
     try:
         body = extract_body_text(page)
-        url = page.url or ""
-        bad_hits = 0
-        for key in ["產品目錄", "產品說明", "選擇方案", "介紹影片", "規格表", "使用評價", "Watch on YouTube"]:
-            if key in body:
-                bad_hits += 1
-        if "/e-com/" in url:
-            bad_hits += 3
-        return bad_hits >= 2
+        if "/e-com/product-detail" in (page.url or ""):
+            return True
+        intro_hits = sum(1 for x in ["產品目錄", "產品說明", "模組功能表", "Powered by", "選擇方案"] if x in body)
+        article_hits = sum(1 for x in ["法說逐字稿", "法說會", "簡報", "影音"] if x in body)
+        return intro_hits >= 2 and article_hits < 3
     except Exception:
         return False
 
 
-def looks_like_transcript_list_page(page, stock_code: str) -> bool:
-    """真的逐字稿列表頁通常會有個股代號 + 法說/逐字稿文章卡。"""
+def looks_like_transcript_article_list(page, stock_code: str) -> bool:
+    code = normalize_stock_code(stock_code)
     try:
         body = extract_body_text(page)
-        code = normalize_stock_code(stock_code)
-        if is_product_intro_or_catalog_page(page) or is_wrong_mall_page(page):
-            return False
-        if "個股導航員" in body and "快速抓住營運關鍵點" in body and "法說逐字稿" not in body:
+        if looks_like_intro_or_product_page(page):
             return False
         if code and code not in body:
             return False
-        # 文章卡常見：欣興(3037) 25Q4 法說逐字稿 / 欣興(3037) 2025 Q3 法說會 ...
-        if re.search(rf"{re.escape(code)}[\s\S]{{0,80}}(法說逐字稿|法說會|逐字稿)", body):
-            return True
-        if "逐字稿" in body and ("簡報" in body or "影音" in body) and "法說" in body:
-            return True
+        strong = ("法說逐字稿" in body) or ("逐字稿" in body and "法說會" in body)
+        cardish = bool(re.search(r"20\d{2}[/.-]\d{1,2}[/.-]\d{1,2}", body)) and ("簡報" in body or "影音" in body or "法說會" in body)
+        return strong and cardish
     except Exception:
-        pass
-    return False
+        return False
 
 
-def click_transcript_tab(page, stock_code: str = "") -> List[str]:
-    actions = []
-    # 這裡只允許點「上方橫向功能 bar」裡的 ⭐逐字稿。
-    # 不碰產品介紹頁中的「逐字稿：獨家提供...」，也不碰虎八速覽 header 的「逐字稿：日期」。
+def activate_stock_on_transcript_tab(page, stock_code: str) -> List[str]:
+    """逐字稿 tab 會先停在「個股導航員」首頁；這裡再點一次股票 chip，例如 3037 欣興。"""
+    actions: List[str] = []
+    code = normalize_stock_code(stock_code)
 
-    try:
-        page.evaluate("window.scrollTo(0, 0)")
-        page.keyboard.press("Escape")
-        page.wait_for_timeout(700)
-    except Exception:
-        pass
-    close_blockers(page)
-
-    def debug_visible_tabs(tag: str):
+    def click_stock_chip(tag: str) -> bool:
         try:
-            data = page.evaluate(
+            clicked = page.evaluate(
                 """
-                () => {
-                  function visibleish(el){
-                    const r=el.getBoundingClientRect(); const s=getComputedStyle(el);
-                    return r.width>5 && r.height>5 && s.display!=='none' && s.visibility!=='hidden' && s.opacity!=='0';
-                  }
-                  function clean(t){ return (t||'').replace(/\\s+/g,' ').trim(); }
-                  return Array.from(document.querySelectorAll('a,button,div,span,li'))
-                    .filter(visibleish)
-                    .map((el,idx)=>{ const r=el.getBoundingClientRect(); const a=el.closest('a'); return {idx, text:clean(el.innerText), top:r.top, left:r.left, width:r.width, height:r.height, href:a?a.href:''}; })
-                    .filter(x => x.text.includes('逐字稿') || x.text.includes('自動導航') || x.text.includes('小助理') || x.text.includes('企業透視'))
-                    .slice(0,30);
-                }
-                """
-            )
-            actions.append(f"tab debug {tag}: " + json.dumps(data, ensure_ascii=False)[:900])
-        except Exception as e:
-            actions.append(f"tab debug failed {tag}: {str(e)[:80]}")
-
-    def try_click_exact_tab(tag: str):
-        """找 clean 後等於逐字稿的 tab，優先上方 bar / 橫向 scroll container。"""
-        try:
-            result = page.evaluate(
-                """
-                () => {
-                  function visibleish(el){
-                    const r=el.getBoundingClientRect(); const s=getComputedStyle(el);
-                    return r.width>3 && r.height>3 && s.display!=='none' && s.visibility!=='hidden' && s.opacity!=='0';
-                  }
-                  function cleanTab(t){
-                    return (t||'')
-                      .replace(/[★☆⭐❤❤️]/g,'')
-                      .replace(/\\s+/g,'')
-                      .trim();
-                  }
-                  function textOf(el){ return (el.innerText || el.textContent || '').replace(/\\s+/g,' ').trim(); }
-                  function badContext(el){
-                    const parts = [];
-                    let p = el;
-                    for(let i=0; p && i<4; i++, p=p.parentElement){
-                      parts.push((p.innerText || '').slice(0,600));
-                    }
-                    const all = parts.join('\\n');
-                    return all.includes('產品目錄') || all.includes('產品說明') || all.includes('選擇方案') || all.includes('逐字稿：獨家') || all.includes('法說會全文');
-                  }
-                  function scrollAncestorsToCenter(el){
-                    let p = el.parentElement;
-                    for(let i=0; p && i<8; i++, p=p.parentElement){
-                      if(p.scrollWidth > p.clientWidth + 20){
-                        const er = el.getBoundingClientRect();
-                        const pr = p.getBoundingClientRect();
-                        p.scrollLeft += (er.left + er.width/2) - (pr.left + pr.width/2);
-                      }
-                    }
-                    try { el.scrollIntoView({block:'nearest', inline:'center'}); } catch(e) {}
-                  }
-                  function clickCenter(el){
-                    scrollAncestorsToCenter(el);
-                    const r = el.getBoundingClientRect();
-                    const x = Math.max(2, Math.min(window.innerWidth-2, r.left + r.width/2));
-                    const y = Math.max(2, Math.min(window.innerHeight-2, r.top + r.height/2));
-                    const at = document.elementFromPoint(x, y);
-                    const clickable = (at && at.closest('a,button,[role="button"],.v-tab,.v-btn,div,span,li')) || el.closest('a,button,[role="button"],.v-tab,.v-btn') || el;
-                    clickable.click();
-                    return {x,y, clickedText:textOf(clickable), targetText:textOf(el), top:r.top, left:r.left, width:r.width, height:r.height};
-                  }
-
-                  const all = Array.from(document.querySelectorAll('a,button,[role="button"],.v-tab,.v-btn,div,span,li'))
-                    .filter(visibleish)
-                    .map((el, idx) => {
-                      const r = el.getBoundingClientRect();
-                      const a = el.closest('a');
-                      const t = textOf(el);
-                      const c = cleanTab(t);
-                      const parent = el.parentElement;
-                      const pr = parent ? parent.getBoundingClientRect() : {top:999,left:999,width:0,height:0};
-                      const isHorizontal = parent ? (parent.scrollWidth > parent.clientWidth + 20) : false;
-                      return {el, idx, text:t, clean:c, top:r.top, left:r.left, width:r.width, height:r.height, href:a?a.href:'', parentTop:pr.top, parentLeft:pr.left, isHorizontal, bad:badContext(el)};
-                    });
-
-                  const strict = all
-                    .filter(x => x.clean === '逐字稿')
-                    .filter(x => !/逐字稿\\s*[：:]\\s*20\\d{2}/.test(x.text))
+                (code) => {
+                  function visible(el){ const r=el.getBoundingClientRect(); const s=getComputedStyle(el); return r.width>5 && r.height>5 && s.display!=='none' && s.visibility!=='hidden' && s.opacity!=='0' && r.bottom>0 && r.top<window.innerHeight; }
+                  const nodes = Array.from(document.querySelectorAll('button,a,[role="button"],.v-chip,.v-btn,div,span,li'))
+                    .filter(visible)
+                    .map(el => { const r=el.getBoundingClientRect(); const text=(el.innerText||'').replace(/\s+/g,' ').trim(); const a=el.closest('a'); return {el, text, top:r.top, left:r.left, width:r.width, height:r.height, href:a?a.href:''}; })
+                    .filter(x => x.text.includes(code))
+                    .filter(x => x.text.length <= 40)
+                    .filter(x => x.top > 90)
                     .filter(x => !x.href.includes('/e-com/'))
-                    .filter(x => !x.bad)
-                    .map(x => ({...x, score:
-                        (x.top < 160 || x.parentTop < 160 ? -2000 : 0) +
-                        (x.isHorizontal ? -1000 : 0) +
-                        Math.max(0, x.top) + Math.abs(x.left) / 20 + x.text.length
-                    }))
-                    .sort((a,b)=>a.score-b.score);
-                  if(!strict.length){
-                    return {ok:false, reason:'no strict top-bar transcript tab', candidates: all.filter(x=>x.text.includes('逐字稿')).slice(0,20).map(x=>({text:x.text, clean:x.clean, top:x.top, left:x.left, href:x.href, bad:x.bad, isHorizontal:x.isHorizontal, parentTop:x.parentTop}))};
-                  }
-                  const target = strict[0];
-                  const clicked = clickCenter(target.el);
-                  return {ok:true, picked:{text:target.text, clean:target.clean, top:target.top, left:target.left, href:target.href, score:target.score, isHorizontal:target.isHorizontal, parentTop:target.parentTop}, clicked};
+                    .sort((a,b)=>a.text.length-b.text.length || a.top-b.top || a.left-b.left);
+                  if(!nodes.length) return {ok:false, reason:'no stock chip'};
+                  const t=nodes[0];
+                  const clickEl = t.el.closest('a,button,[role="button"],.v-chip,.v-btn') || t.el;
+                  clickEl.scrollIntoView({block:'center', inline:'center'});
+                  clickEl.click();
+                  return {ok:true, text:t.text, top:t.top, left:t.left, href:t.href};
                 }
-                """
+                """,
+                code,
             )
-            actions.append(f"click transcript exact tab {tag}: " + json.dumps(result, ensure_ascii=False)[:900])
-            if isinstance(result, dict) and result.get("ok"):
+            actions.append(f"click stock chip {tag}: " + json.dumps(clicked, ensure_ascii=False)[:500])
+            if isinstance(clicked, dict) and clicked.get("ok"):
                 page.wait_for_timeout(6500)
                 try:
                     page.wait_for_load_state("networkidle", timeout=20000)
@@ -914,95 +899,59 @@ def click_transcript_tab(page, stock_code: str = "") -> List[str]:
                     pass
                 return True
         except Exception as e:
-            actions.append(f"click transcript exact tab failed {tag}: {str(e)[:120]}")
+            actions.append(f"click stock chip failed {tag}: {str(e)[:100]}")
         return False
 
-    debug_visible_tabs("before")
-
-    if try_click_exact_tab("direct"):
-        if stock_code and looks_like_transcript_list_page(page, stock_code):
-            actions.append("confirmed transcript list after direct click")
-            return actions
-        actions.append("direct click did not confirm transcript list; continue scroll retries")
-
-    # 上方 bar 在手機版是橫向捲動；只調整 top bar 容器，不再全頁亂找。
-    for pos in [0, 120, 240, 360, 480, 640, 820, 1040, 1280]:
-        try:
-            scrolled = page.evaluate(
-                """
-                (pos) => {
-                  function clean(t){ return (t||'').replace(/\\s+/g,'').trim(); }
-                  const els = Array.from(document.querySelectorAll('*'));
-                  const targets = els.filter(el => {
-                    const r = el.getBoundingClientRect();
-                    const text = clean(el.innerText || '');
-                    return el.scrollWidth > el.clientWidth + 30 && r.top >= 0 && r.top < 160 &&
-                           (text.includes('自動導航') || text.includes('企業透視') || text.includes('小助理') || text.includes('追蹤成長數據') || text.includes('逐字稿'));
-                  });
-                  for(const el of targets){ el.scrollLeft = pos; }
-                  return targets.map(el => ({text: clean(el.innerText||'').slice(0,120), top:el.getBoundingClientRect().top, left:el.getBoundingClientRect().left, scrollLeft:el.scrollLeft, sw:el.scrollWidth, cw:el.clientWidth})).slice(0,5);
-                }
-                """,
-                pos,
-            )
-            actions.append(f"topbar scrollLeft={pos}: " + json.dumps(scrolled, ensure_ascii=False)[:500])
-            page.wait_for_timeout(700)
-            if try_click_exact_tab(f"topbar scrollLeft={pos}"):
-                if stock_code and looks_like_transcript_list_page(page, stock_code):
-                    actions.append(f"confirmed transcript list after scrollLeft={pos}")
-                    return actions
-                actions.append(f"clicked at scrollLeft={pos}, but not confirmed; retry")
-        except Exception as e:
-            actions.append(f"topbar scroll retry failed {pos}: {str(e)[:100]}")
-
-    if stock_code and looks_like_transcript_list_page(page, stock_code):
-        actions.append("already looks like transcript list")
+    if looks_like_transcript_article_list(page, code):
+        actions.append("transcript article list already visible")
         return actions
+    for attempt in range(2):
+        if click_stock_chip(f"attempt-{attempt+1}") and looks_like_transcript_article_list(page, code):
+            actions.append("confirmed article list after stock chip")
+            return actions
 
-    actions.append("FAILED: cannot click top-bar ⭐逐字稿; no product-text fallback used")
-    debug_visible_tabs("after")
+    selectors = ["input[placeholder*='股票代碼或名稱']", "input[placeholder*='股票代碼']", "input[placeholder*='代碼']", "input[placeholder*='搜尋']", "input[type='search']", "input[role='combobox']", "input[type='text']"]
+    for selector in selectors:
+        try:
+            loc = page.locator(selector).first
+            if loc.count() > 0:
+                loc.scroll_into_view_if_needed(timeout=4000); loc.click(timeout=4000); loc.fill(code, timeout=4000)
+                actions.append(f"filled transcript stock {code} by {selector}")
+                page.wait_for_timeout(1200)
+                try: loc.press("Enter", timeout=4000)
+                except Exception: page.keyboard.press("Enter")
+                page.wait_for_timeout(5500)
+                click_stock_chip("after-search")
+                if looks_like_transcript_article_list(page, code):
+                    actions.append("confirmed article list after search")
+                    return actions
+                break
+        except Exception as e:
+            actions.append(f"transcript stock search failed {selector}: {str(e)[:80]}")
     return actions
 
 
 def collect_transcript_candidates(page, stock_code: str) -> List[Dict]:
+    """只抓真正逐字稿列表上的文章卡；排除產品介紹頁與虎八速覽全文。"""
     code = normalize_stock_code(stock_code)
-    if is_product_intro_or_catalog_page(page) or is_wrong_mall_page(page):
-        return []
     try:
         candidates = page.evaluate(
             """
             (code) => {
-              function visible(el){
-                const r=el.getBoundingClientRect(); const s=getComputedStyle(el);
-                return r.width>20 && r.height>10 && s.display!=='none' && s.visibility!=='hidden' && s.opacity!=='0' && r.bottom>0 && r.top<window.innerHeight+1200;
-              }
-              function txt(el){ return (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim(); }
-              const badExact = ['全台股','全美股','搜尋','日期','小助理','追蹤成長數據','使用教學','續約','募集達人','自動導航','企業透視','法人預估','IBES預估'];
-              const nodes = Array.from(document.querySelectorAll('a,button,article,section,li,div'))
+              function visible(el){ const r=el.getBoundingClientRect(); const s=getComputedStyle(el); return r.width>40 && r.height>15 && s.display!=='none' && s.visibility!=='hidden' && s.opacity!=='0' && r.bottom>0 && r.top<window.innerHeight; }
+              function clean(t){ return (t||'').replace(/\s+/g,' ').trim(); }
+              const badWords = ['產品目錄','產品說明','模組功能表','選擇方案','自動導航','企業透視','小助理','追蹤成長數據','搜尋雷達','使用教學','續約','募集達人','Cookie 技術'];
+              const raw = Array.from(document.querySelectorAll('a,button,[role="button"],article,section,.v-card,.card,div,li'))
                 .filter(visible)
-                .map((el, idx) => {
-                  const r = el.getBoundingClientRect();
-                  const text = txt(el);
-                  const a = el.closest('a');
-                  return {idx, text, href:a?a.href:'', top:r.top, left:r.left, width:r.width, height:r.height, cx:r.left + Math.min(60, Math.max(24, r.width*0.18)), cy:r.top + Math.min(38, Math.max(18, r.height*0.25))};
-                })
+                .map((el, idx) => { const r = el.getBoundingClientRect(); const text = clean(el.innerText || ''); const a = el.closest('a'); return {el, idx, text, top:r.top, left:r.left, width:r.width, height:r.height, href:a?a.href:'', cx:r.left + Math.min(Math.max(r.width*0.22, 24), Math.max(r.width-10, 25)), cy:r.top + Math.min(Math.max(r.height*0.35, 18), Math.max(r.height-10, 20))}; })
                 .filter(x => x.text.length >= 18 && x.text.length <= 700)
                 .filter(x => code ? x.text.includes(code) : true)
-                .filter(x => /法說逐字稿|法說會|逐字稿/.test(x.text))
-                .filter(x => !/逐字稿\\s*[：:]\\s*20\\d{2}/.test(x.text))
-                .filter(x => !x.text.includes('個股研究筆記') && !x.text.includes('產業情報小助理') && !x.text.includes('資料來源：優分析'))
-                .filter(x => !x.text.includes('產品目錄') && !x.text.includes('產品說明') && !x.text.includes('逐字稿：獨家'))
-                .filter(x => !badExact.some(b => x.text === b || (x.text.includes(b) && x.text.length < 40)))
-                .sort((a,b) => a.top-b.top || a.left-b.left || a.text.length-b.text.length);
-              const seen = new Set();
-              const out = [];
-              for (const x of nodes) {
-                const key = x.text.slice(0, 120);
-                if (seen.has(key)) continue;
-                seen.add(key);
-                out.push(x);
-                if (out.length >= 12) break;
-              }
+                .filter(x => x.text.includes('法說') || x.text.includes('逐字稿'))
+                .filter(x => x.text.includes('法說逐字稿') || (x.text.includes('法說會') && x.text.includes('逐字稿')) || (x.text.includes('簡報') && x.text.includes('影音') && x.text.includes('法說')))
+                .filter(x => !badWords.some(b => x.text.includes(b)))
+                .sort((a,b) => { const as = (a.text.includes('法說逐字稿') ? -100 : 0) + (a.text.includes('簡報') ? -20 : 0) + a.text.length/50 + a.top/10; const bs = (b.text.includes('法說逐字稿') ? -100 : 0) + (b.text.includes('簡報') ? -20 : 0) + b.text.length/50 + b.top/10; return as-bs; });
+              const seen = new Set(); const out = [];
+              for (const x of raw) { let title = x.text; const m = title.match(new RegExp('([^\\n]{0,120}'+code+'[^\\n]{0,220}?法說[^\\n]{0,220})')); if (m) title = m[1].trim(); const key = title.slice(0, 100); if (seen.has(key)) continue; seen.add(key); out.push({idx:x.idx, text:x.text, title, top:x.top, left:x.left, width:x.width, height:x.height, cx:x.cx, cy:x.cy, href:x.href}); if (out.length >= 10) break; }
               return out;
             }
             """,
@@ -1021,13 +970,33 @@ def click_candidate_by_index(page, stock_code: str, index: int) -> Dict:
         return {"ok": False, "error": "candidate index out of range", "candidates": candidates}
     c = candidates[index]
     try:
+        clicked = page.evaluate(
+            """
+            ({cx, cy}) => {
+              function visible(el){ const r=el.getBoundingClientRect(); const s=getComputedStyle(el); return r.width>5 && r.height>5 && s.display!=='none' && s.visibility!=='hidden' && s.opacity!=='0' && r.bottom>0 && r.top<window.innerHeight; }
+              const all = Array.from(document.querySelectorAll('button,a,[role="button"],.v-chip,.v-btn,span,div,li'))
+                .filter(visible)
+                .map(el => { const r=el.getBoundingClientRect(); return {el, text:(el.innerText||'').replace(/\s+/g,' ').trim(), top:r.top, left:r.left, width:r.width, height:r.height}; });
+              const chips = all.filter(x => x.text === '逐字稿' || x.text.includes('逐字稿')).filter(x => Math.abs((x.top + x.height/2) - cy) < 120).sort((a,b)=>Math.abs((a.top+a.height/2)-cy)-Math.abs((b.top+b.height/2)-cy));
+              if(chips.length){ const t=chips[0]; (t.el.closest('a,button,[role="button"],.v-chip,.v-btn') || t.el).click(); return {ok:true, method:'near transcript chip', text:t.text, top:t.top, left:t.left}; }
+              return {ok:false, reason:'no nearby transcript chip'};
+            }
+            """,
+            {"cx": c.get("cx"), "cy": c.get("cy")},
+        )
+        if isinstance(clicked, dict) and clicked.get("ok"):
+            page.wait_for_timeout(6000)
+            try: page.wait_for_load_state("networkidle", timeout=20000)
+            except Exception: pass
+            return {"ok": True, "candidate": c, "candidate_count": len(candidates), "click": clicked}
+    except Exception:
+        pass
+    try:
         page.mouse.click(c["cx"], c["cy"])
         page.wait_for_timeout(6000)
-        try:
-            page.wait_for_load_state("networkidle", timeout=20000)
-        except Exception:
-            pass
-        return {"ok": True, "candidate": c, "candidate_count": len(candidates)}
+        try: page.wait_for_load_state("networkidle", timeout=20000)
+        except Exception: pass
+        return {"ok": True, "candidate": c, "candidate_count": len(candidates), "click": {"method": "card coordinate"}}
     except Exception as e:
         return {"ok": False, "error": str(e), "candidate": c, "candidate_count": len(candidates)}
 
@@ -1194,26 +1163,33 @@ def run_transcript_crawler(
 
             status_box.write("切到逐字稿分頁...")
             log("切到逐字稿分頁")
-            tab_actions = click_transcript_tab(page, code)
+            tab_actions = click_transcript_tab(page)
             close_blockers(page)
-            page.wait_for_timeout(4000)
+            page.wait_for_timeout(3500)
+            log(f"逐字稿 tab 點擊後：{page.title()} / {page.url}")
+
+            # 逐字稿 tab 常會先停在「個股導航員」首頁；必須再點一次 3037 欣興 chip 才會出現文章列表。
+            activate_actions = activate_stock_on_transcript_tab(page, code)
+            close_blockers(page)
+            page.wait_for_timeout(3500)
             progress.progress(52)
-            debug["transcript_tab"] = {"actions": tab_actions, "title": page.title(), "url": page.url}
+            debug["transcript_tab"] = {"tab_actions": tab_actions, "activate_actions": activate_actions, "title": page.title(), "url": page.url, "looks_like_article_list": looks_like_transcript_article_list(page, code), "looks_like_intro": looks_like_intro_or_product_page(page)}
             (run_dir / "05_transcript_list.txt").write_text(extract_body_text(page), encoding="utf-8")
             if show_screenshots:
                 (run_dir / "05_transcript_list.png").write_bytes(page.screenshot(full_page=True))
-            log(f"逐字稿列表頁：{page.title()} / {page.url}")
+            log(f"逐字稿列表頁驗證：article_list={looks_like_transcript_article_list(page, code)} / intro={looks_like_intro_or_product_page(page)} / {page.title()} / {page.url}")
 
             candidates = collect_transcript_candidates(page, code)
             debug["initial_candidates"] = candidates
             (run_dir / "candidates.json").write_text(json.dumps(candidates, ensure_ascii=False, indent=2), encoding="utf-8")
-            if not candidates:
+            if not candidates or not looks_like_transcript_article_list(page, code):
                 browser.close()
-                st.warning("沒有找到逐字稿文章候選項目。請下載診斷 ZIP 給我看。")
+                st.warning("沒有進到真正的逐字稿文章列表；已停止，沒有輸出假成功。請下載診斷 ZIP 給我看。")
+                st.write("重點檢查：05_transcript_list.txt / 05_transcript_list.png / candidates.json")
                 st.download_button(
                     "下載診斷 ZIP",
                     data=build_zip_bytes(run_dir),
-                    file_name=f"{run_id}_no_candidates.zip",
+                    file_name=f"{run_id}_no_real_transcript_list.zip",
                     mime="application/zip",
                 )
                 return
@@ -1261,7 +1237,7 @@ def run_transcript_crawler(
 
                 if not article.get("method"):
                     article["method"] = "candidate click"
-                article["status"] = "成功" if (article["clean_length"] >= 500 and not is_product_intro_or_catalog_page(page)) else "可能失敗：不是完整逐字稿或文字太短，請看 raw 檔"
+                article["status"] = "成功" if article["clean_length"] >= 300 else "可能失敗：文字太短，請看 raw 檔"
                 article["candidate"] = click_result
                 articles.append(article)
 
@@ -1327,8 +1303,8 @@ def run_transcript_crawler(
 # -----------------------------
 # Page UI
 # -----------------------------
-st.title("UAnalyze 產業情報小助理爬蟲｜逐字稿 Tab 修正版")
-st.caption("第二區塊改成逐字稿文字爬取；本版鎖定左側欄「我的訂閱 → 優分析產業資料庫」，禁止誤入 e-com 商城。")
+st.title("UAnalyze 產業情報小助理爬蟲｜逐字稿 stock-chip 修正版")
+st.caption("第二區塊改成逐字稿文字爬取；本版修正「進入逐字稿 tab 後要再點股票 chip」與「禁止把產品介紹頁當成功」。")
 
 with st.expander("登入與爬蟲設定", expanded=True):
     login_url = st.text_input("UAnalyze 登入頁網址", value=DEFAULT_LOGIN_URL)
@@ -1348,7 +1324,7 @@ with st.expander("登入與爬蟲設定", expanded=True):
 st.divider()
 
 st.subheader("第一區塊：原本穩定爬蟲")
-st.info("這一版不下載 CSV；重點是鎖定左側欄入口後，只點上方橫向功能列的「⭐逐字稿」，不再誤抓產品介紹或虎八速覽文字。")
+st.info("這一版不下載 CSV；重點是修正左側欄入口，避免再點到商城的「優分析產業資料庫」商品頁。")
 
 st.divider()
 st.subheader("第二區塊：逐字稿爬文")
