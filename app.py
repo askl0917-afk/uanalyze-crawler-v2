@@ -832,12 +832,240 @@ def write_revenue_run_files(run_dir: Path, company_label: str, csv_text: str, ma
     (run_dir / "revenue_tracking.md").write_text(markdown_text or "", encoding="utf-8")
     (run_dir / "debug_info.json").write_text(json.dumps(debug, ensure_ascii=False, indent=2), encoding="utf-8")
 
+
+
+def run_revenue_csv_only(login_url: str, email: str, password: str, stock_code: str, wait_seconds: int, show_intermediate_images: bool):
+    """第二區塊獨立流程：只登入、開虎八速覽、切股票、抓累計月營收 CSV；不跑第一區塊 TOPICS。"""
+    company_label = normalize_stock_code(stock_code)
+    run_id = f"{now_stamp()}_{safe_name(company_label)}_revenue_only"
+    run_dir = RUNS_DIR / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    progress = st.progress(0)
+    status_box = st.empty()
+    log_box = st.empty()
+    logs = []
+
+    def log(msg: str):
+        line = f"[{human_now()}] {msg}"
+        logs.append(line)
+        log_box.text("\n".join(logs[-12:]))
+        try:
+            (run_dir / "run_log.txt").write_text("\n".join(logs), encoding="utf-8")
+        except Exception:
+            pass
+
+    try:
+        if not email or not password:
+            st.error("請先在上方輸入 UAnalyze Email 和密碼。")
+            st.stop()
+        if not company_label:
+            st.error("請先在上方輸入股票代號，只填數字，例如 3030。")
+            st.stop()
+
+        st.info("第二區塊獨立執行：只抓累計月營收 CSV，不會跑第一區塊欄位。")
+        install = ensure_playwright_chromium()
+        if install["returncode"] != 0:
+            st.error("Playwright Chromium 安裝 / 檢查失敗。")
+            st.code(install["stdout"] + "\n" + install["stderr"])
+            st.stop()
+
+        from playwright.sync_api import sync_playwright
+
+        debug = {
+            "run_id": run_id,
+            "company_label": company_label,
+            "mode": "revenue_only_independent",
+            "started_at": human_now(),
+        }
+
+        with sync_playwright() as p:
+            sys_chrome = install.get("system_chromium") or system_chromium_path()
+            launch_kwargs = {
+                "headless": True,
+                "args": ["--no-sandbox", "--disable-dev-shm-usage"],
+            }
+            if sys_chrome:
+                launch_kwargs["executable_path"] = sys_chrome
+                log(f"使用系統 Chromium：{sys_chrome}")
+
+            browser = p.chromium.launch(**launch_kwargs)
+            context = browser.new_context(
+                viewport={"width": 1440, "height": 1000},
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+            )
+            page = context.new_page()
+            page.set_default_timeout(60000)
+            page.set_default_navigation_timeout(90000)
+
+            status_box.write("登入 UAnalyze 中...")
+            log("登入 UAnalyze")
+            page.goto(login_url, wait_until="domcontentloaded", timeout=90000)
+            page.wait_for_timeout(7000)
+            blocker_actions = close_blockers(page)
+            fill_result = fill_like_human(page, email, password)
+            login_methods = click_login(page)
+            try:
+                page.wait_for_load_state("networkidle", timeout=25000)
+            except Exception:
+                pass
+            page.wait_for_timeout(wait_seconds * 1000)
+            progress.progress(20)
+            debug.update({
+                "blocker_actions": blocker_actions,
+                "fill_result": fill_result,
+                "login_methods": login_methods,
+                "login_title": page.title(),
+                "login_url_after": page.url,
+            })
+            (run_dir / "debug_login_text.txt").write_text(extract_body_text(page), encoding="utf-8")
+            log(f"登入後：{page.title()} / {page.url}")
+            if show_intermediate_images:
+                try:
+                    st.image(page.screenshot(full_page=True), caption="第二區塊：登入後截圖")
+                except Exception:
+                    pass
+
+            status_box.write("開啟虎八速覽中...")
+            log("開啟虎八速覽")
+            huba_actions = click_huba_quick_view(page)
+            try:
+                page.wait_for_load_state("networkidle", timeout=25000)
+            except Exception:
+                pass
+            page.wait_for_timeout(7000)
+            progress.progress(35)
+            debug.update({
+                "huba_actions": huba_actions,
+                "huba_title": page.title(),
+                "huba_url": page.url,
+            })
+            (run_dir / "debug_huba_text.txt").write_text(extract_body_text(page), encoding="utf-8")
+            log(f"虎八速覽：{page.title()} / {page.url}")
+
+            status_box.write(f"切換股票代號：{company_label} ...")
+            log(f"切換股票代號：{company_label}")
+            stock_actions = switch_stock(page, company_label)
+            try:
+                page.wait_for_load_state("networkidle", timeout=25000)
+            except Exception:
+                pass
+            page.wait_for_timeout(8000)
+            after_stock_text = extract_body_text(page)
+            current_code_after_switch = detect_current_stock_code(after_stock_text)
+            debug.update({
+                "stock_actions": stock_actions,
+                "after_stock_title": page.title(),
+                "after_stock_url": page.url,
+                "current_code_after_switch": current_code_after_switch,
+            })
+            (run_dir / "debug_after_stock_text.txt").write_text(after_stock_text, encoding="utf-8")
+            try:
+                (run_dir / "after_stock_screenshot.png").write_bytes(page.screenshot(full_page=True))
+            except Exception:
+                pass
+            progress.progress(55)
+            log(f"切換股票後：{page.title()} / {page.url} / current={current_code_after_switch or 'unknown'}")
+
+            if current_code_after_switch and current_code_after_switch != company_label:
+                st.error(f"股票代號沒有成功切換：目前仍是 {current_code_after_switch}，目標是 {company_label}。已停止抓 CSV，避免抓錯公司。")
+                st.download_button(
+                    label="下載第二區塊切換失敗診斷 ZIP",
+                    data=build_zip_bytes(run_dir),
+                    file_name=f"{run_id}_switch_failed.zip",
+                    mime="application/zip",
+                )
+                browser.close()
+                st.stop()
+            elif not current_code_after_switch:
+                st.warning("無法從頁面文字確認目前股票代號，仍會繼續抓 CSV；若結果不是目標股票，請下載 ZIP 查看 after_stock_screenshot.png。")
+
+            status_box.write("尋找並擷取『累計月營收追蹤』CSV...")
+            log("尋找累計月營收追蹤 Highcharts CSV")
+            csv_result = get_revenue_csv_with_scroll(page, REVENUE_CHART_KEYWORD)
+            debug["revenue_csv_result_meta"] = {k: v for k, v in csv_result.items() if k != "csv"}
+
+            if csv_result.get("ok") and (csv_result.get("csv") or "").strip():
+                csv_text = csv_result.get("csv") or ""
+                md_text = build_revenue_csv_markdown(
+                    company_label,
+                    csv_text,
+                    csv_result.get("chart_title") or REVENUE_CHART_KEYWORD,
+                    page.title(),
+                    page.url,
+                    csv_result.get("method") or "Highcharts CSV",
+                )
+                write_revenue_run_files(run_dir, company_label, csv_text, md_text, debug)
+                try:
+                    (run_dir / "revenue_page_screenshot.png").write_bytes(page.screenshot(full_page=True))
+                except Exception:
+                    pass
+                browser.close()
+                progress.progress(100)
+                status_box.write("第二區塊完成。")
+                log("第二區塊完成：CSV 已取得")
+
+                st.success(f"第二區塊完成：已抓到 {company_label} 的累計月營收追蹤 CSV。")
+                copy_button(csv_text, "一鍵複製累計月營收 CSV")
+                st.text_area("累計月營收 CSV", csv_text, height=420)
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.download_button(
+                        label="下載累計月營收 CSV",
+                        data=csv_text.encode("utf-8-sig"),
+                        file_name=f"{run_id}_revenue_tracking.csv",
+                        mime="text/csv",
+                    )
+                with c2:
+                    st.download_button(
+                        label="下載第二區塊診斷 ZIP",
+                        data=build_zip_bytes(run_dir),
+                        file_name=f"{run_id}.zip",
+                        mime="application/zip",
+                    )
+                return
+
+            debug["revenue_csv_failed"] = {k: v for k, v in csv_result.items() if k != "csv"}
+            (run_dir / "revenue_csv_failed.json").write_text(json.dumps(debug["revenue_csv_failed"], ensure_ascii=False, indent=2), encoding="utf-8")
+            try:
+                (run_dir / "revenue_failed_screenshot.png").write_bytes(page.screenshot(full_page=True))
+            except Exception:
+                pass
+            browser.close()
+            progress.progress(100)
+            st.warning("第二區塊沒有成功取得累計月營收 CSV。請下載診斷 ZIP，裡面有 revenue_csv_failed.json 與截圖。")
+            st.download_button(
+                label="下載第二區塊診斷 ZIP",
+                data=build_zip_bytes(run_dir),
+                file_name=f"{run_id}_revenue_failed.zip",
+                mime="application/zip",
+            )
+
+    except Exception as e:
+        st.error("第二區塊獨立流程失敗。")
+        st.exception(e)
+        try:
+            (run_dir / "error.txt").write_text(str(e), encoding="utf-8")
+        except Exception:
+            pass
+        if run_dir.exists() and any(run_dir.iterdir()):
+            st.download_button(
+                label="下載第二區塊暫存 ZIP",
+                data=build_zip_bytes(run_dir),
+                file_name=f"{run_id}_partial.zip",
+                mime="application/zip",
+            )
+
 # -----------------------------
 # Page UI
 # -----------------------------
 
 st.title("UAnalyze 產業情報小助理：v2 測試版")
-st.caption("第一區塊維持原本穩定爬蟲；第二區塊新增累計月營收追蹤 CSV 擷取。兩個區塊共用同一組 Email、密碼、股票代號。")
+st.caption("第一區塊維持原本穩定爬蟲；第二區塊可獨立抓累計月營收追蹤 CSV。兩個區塊共用同一組 Email、密碼、股票代號。")
 
 with st.expander("登入與爬蟲設定", expanded=True):
     login_url = st.text_input("UAnalyze 登入頁網址", value="https://pro.uanalyze.com.tw/login-page")
@@ -1226,7 +1454,10 @@ if st.button("開始長時間爬取產業情報欄位"):
 
 st.divider()
 st.header("第二區塊：累計月營收追蹤 CSV")
-st.caption("這個區塊不會再重新登入、不會再重新輸入股票代號。按上方第一區塊開始爬蟲後，程式會在同一個已登入、已切換股票的頁面，接著擷取累計月營收追蹤 CSV；完成後這裡可從最近結果一鍵複製。")
+st.caption("可獨立執行：只登入一次、進虎八速覽、輸入一次股票代號，然後直接擷取『累計月營收追蹤』CSV；不會跑第一區塊的產業情報欄位。")
+
+if st.button("只抓第二區塊：累計月營收 CSV", key="run_revenue_only"):
+    run_revenue_csv_only(login_url, email, password, stock_code, wait_seconds, show_intermediate_images)
 
 latest_revenue = None
 for rd in latest_run_dirs(limit=10):
@@ -1248,4 +1479,4 @@ if latest_revenue:
         key="download_latest_revenue_csv",
     )
 else:
-    st.info("目前還沒有累計月營收 CSV。請先按上方『開始長時間爬取產業情報欄位』，完成後會在同一次頁面自動抓取。")
+    st.info("目前還沒有累計月營收 CSV。可直接按上方「只抓第二區塊：累計月營收 CSV」獨立執行。")
