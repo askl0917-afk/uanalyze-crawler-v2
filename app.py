@@ -507,6 +507,11 @@ def switch_stock(page, stock_code: str):
             current = detect_current_stock_code(body)
             if current == query:
                 actions.append(f"confirmed current stock {current} after {tag}")
+                try:
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(500)
+                except Exception:
+                    pass
                 return True
         except Exception:
             pass
@@ -762,6 +767,165 @@ def build_revenue_csv_markdown(company_label: str, csv_text: str, chart_title: s
     ])
 
 
+
+def dismiss_page_overlays(page):
+    """關閉搜尋下拉與 cookie 浮層。"""
+    try:
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(500)
+    except Exception:
+        pass
+    for t in ["我知道了", "OK", "同意", "接受"]:
+        try:
+            loc = page.get_by_text(t, exact=False)
+            if loc.count() > 0:
+                loc.last.click(timeout=2500)
+                page.wait_for_timeout(800)
+                break
+        except Exception:
+            pass
+
+
+def scroll_revenue_section_into_view(page, keyword: str = REVENUE_CHART_KEYWORD) -> dict:
+    """UAnalyze 的內容區常是內層捲動；用文字定位與滑鼠滾輪把第二區塊捲進畫面。"""
+    dismiss_page_overlays(page)
+    meta = {"ok": False, "method": "none"}
+    try:
+        loc = page.get_by_text(keyword, exact=False).last
+        if loc.count() > 0:
+            loc.scroll_into_view_if_needed(timeout=12000)
+            page.wait_for_timeout(2500)
+            return {"ok": True, "method": "text locator scroll_into_view"}
+    except Exception as e:
+        meta = {"ok": False, "method": "text locator failed", "error": str(e)[:180]}
+
+    # 備援：在主內容區滾輪，這比 window.scrollTo 更適合 UAnalyze 這種內層捲動頁。
+    try:
+        page.mouse.move(1180, 820)
+        for i in range(14):
+            page.mouse.wheel(0, 700)
+            page.wait_for_timeout(700)
+            visible = page.evaluate(
+                """
+                (keyword) => {
+                    function visible(el){
+                        const r = el.getBoundingClientRect();
+                        const s = window.getComputedStyle(el);
+                        return r.width > 5 && r.height > 5 && r.bottom > 60 && r.top < window.innerHeight - 60 && s.display !== 'none' && s.visibility !== 'hidden';
+                    }
+                    return Array.from(document.querySelectorAll('body *')).some(el => visible(el) && ((el.innerText || el.textContent || '').includes(keyword)));
+                }
+                """,
+                keyword,
+            )
+            if visible:
+                return {"ok": True, "method": f"mouse wheel {i+1}"}
+    except Exception as e:
+        return {"ok": False, "method": "mouse wheel failed", "error": str(e)[:180], "last_meta": meta}
+    return {"ok": False, "method": "not found after mouse wheel", "last_meta": meta}
+
+
+def find_revenue_export_button_coord(page, keyword: str = REVENUE_CHART_KEYWORD) -> dict:
+    """找第二區塊那張 Highcharts 的右上角匯出按鈕座標。"""
+    try:
+        return page.evaluate(
+            """
+            (keyword) => {
+                function rectObj(el){ const r=el.getBoundingClientRect(); return {top:r.top,left:r.left,width:r.width,height:r.height,bottom:r.bottom,right:r.right,x:r.left+r.width/2,y:r.top+r.height/2}; }
+                const containers = Array.from(document.querySelectorAll('.highcharts-container'))
+                    .map((el,index)=>{
+                        const text=(el.innerText||el.textContent||'').trim();
+                        const r=rectObj(el);
+                        let score=0;
+                        if(text.includes(keyword)) score+=1000;
+                        if(text.includes('累計今年月營收')) score+=350;
+                        if(text.includes('法人共識估計值')) score+=250;
+                        if(text.includes('我的估計值')) score+=200;
+                        if(text.includes('累計營收超法人預期')) score+=180;
+                        if(text.includes('EPS')) score-=350;
+                        if(text.includes('評等')) score-=250;
+                        if(r.bottom>80 && r.top<window.innerHeight-80) score+=100;
+                        return {el,index,text:text.slice(0,220),rect:r,score};
+                    })
+                    .filter(x=>x.rect.width>100 && x.rect.height>100)
+                    .sort((a,b)=>b.score-a.score);
+                const target = containers.find(x=>x.score>0);
+                if(!target) return {ok:false,error:'target chart container not found',containers:containers.slice(0,6).map(x=>({score:x.score,text:x.text,rect:x.rect}))};
+                const buttons = Array.from(target.el.querySelectorAll('.highcharts-contextbutton, .highcharts-exporting-group, g.highcharts-button, [aria-label*="Chart context menu"], [aria-label*="menu"]'))
+                    .map(el=>({el,cls:el.getAttribute('class')||'',aria:el.getAttribute('aria-label')||'',rect:rectObj(el)}))
+                    .filter(x=>x.rect.width>5 && x.rect.height>5)
+                    .sort((a,b)=>{
+                        const as=(a.cls.includes('contextbutton')?100:0)+(a.cls.includes('exporting')?50:0)+a.rect.left/1000;
+                        const bs=(b.cls.includes('contextbutton')?100:0)+(b.cls.includes('exporting')?50:0)+b.rect.left/1000;
+                        return bs-as;
+                    });
+                if(!buttons.length) return {ok:false,error:'export button not found',target:{score:target.score,text:target.text,rect:target.rect}};
+                return {ok:true,x:buttons[0].rect.x,y:buttons[0].rect.y,button:buttons[0].rect,button_class:buttons[0].cls,button_aria:buttons[0].aria,target:{score:target.score,text:target.text,rect:target.rect}};
+            }
+            """,
+            keyword,
+        )
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+
+
+def download_revenue_csv_via_menu(page, keyword: str = REVENUE_CHART_KEYWORD) -> dict:
+    """不依賴 window.Highcharts；實際點右上角三條線再點 Download CSV。"""
+    scroll_meta = scroll_revenue_section_into_view(page, keyword)
+    coord = find_revenue_export_button_coord(page, keyword)
+    if not coord.get("ok"):
+        return {"ok": False, "error": "export button not found", "scroll_meta": scroll_meta, "coord": coord}
+    try:
+        page.mouse.click(coord["x"], coord["y"])
+        page.wait_for_timeout(1000)
+    except Exception as e:
+        return {"ok": False, "error": "click export button failed: " + str(e)[:220], "scroll_meta": scroll_meta, "coord": coord}
+
+    menu_debug = []
+    try:
+        items = page.locator(".highcharts-menu-item")
+        for i in range(items.count()):
+            item = items.nth(i)
+            try:
+                txt = item.inner_text(timeout=1000).strip()
+            except Exception:
+                txt = ""
+            menu_debug.append(txt)
+            upper = txt.upper().replace(" ", "")
+            if "CSV" in upper and ("DOWNLOAD" in upper or "下載" in txt or "匯出" in txt):
+                with page.expect_download(timeout=20000) as download_info:
+                    item.click(timeout=6000)
+                download = download_info.value
+                path = download.path()
+                raw = Path(path).read_bytes() if path else b""
+                for enc in ["utf-8-sig", "utf-8", "cp950", "big5", "latin1"]:
+                    try:
+                        csv_text = raw.decode(enc)
+                        break
+                    except Exception:
+                        csv_text = ""
+                if not csv_text:
+                    csv_text = raw.decode("utf-8", errors="replace")
+                return {"ok": True, "csv": csv_text, "chart_title": keyword, "method": "Export menu Download CSV", "scroll_meta": scroll_meta, "coord": coord, "menu_items": menu_debug, "suggested_filename": download.suggested_filename}
+    except Exception as e:
+        menu_debug.append("menu item path failed: " + str(e)[:220])
+
+    for txt in ["Download CSV", "下載 CSV", "下載CSV"]:
+        try:
+            loc = page.get_by_text(txt, exact=True).last
+            if loc.count() > 0:
+                with page.expect_download(timeout=20000) as download_info:
+                    loc.click(timeout=6000)
+                download = download_info.value
+                path = download.path()
+                raw = Path(path).read_bytes() if path else b""
+                csv_text = raw.decode("utf-8-sig", errors="replace")
+                return {"ok": True, "csv": csv_text, "chart_title": keyword, "method": f"text menu item {txt}", "scroll_meta": scroll_meta, "coord": coord, "menu_items": menu_debug, "suggested_filename": download.suggested_filename}
+        except Exception as e:
+            menu_debug.append(f"text {txt} failed: {str(e)[:120]}")
+
+    return {"ok": False, "error": "CSV menu item not clicked/downloaded", "scroll_meta": scroll_meta, "coord": coord, "menu_items": menu_debug}
+
 def find_revenue_highcharts_csv(page, keyword: str = REVENUE_CHART_KEYWORD) -> dict:
     try:
         result = page.evaluate(
@@ -808,22 +972,43 @@ def find_revenue_highcharts_csv(page, keyword: str = REVENUE_CHART_KEYWORD) -> d
 
 
 def get_revenue_csv_with_scroll(page, keyword: str = REVENUE_CHART_KEYWORD) -> dict:
-    last = {"ok": False, "error": "not started"}
+    """第二區塊 CSV：先抓 Highcharts API；若沒有 window.Highcharts，就改用實際下載選單。"""
+    dismiss_page_overlays(page)
     try:
         page.wait_for_timeout(2500)
     except Exception:
         pass
-    for y in [0, 450, 900, 1350, 1800, 2300, 2800, 3400, 4000, 4700, 5400, 6200, 7000]:
+
+    scroll_meta = scroll_revenue_section_into_view(page, keyword)
+    last = find_revenue_highcharts_csv(page, keyword)
+    if last.get("ok") and (last.get("csv") or "").strip():
+        last["scroll_meta"] = scroll_meta
+        return last
+
+    menu_result = download_revenue_csv_via_menu(page, keyword)
+    if menu_result.get("ok") and (menu_result.get("csv") or "").strip():
+        menu_result["previous_js_result"] = {k: v for k, v in last.items() if k != "csv"}
+        return menu_result
+
+    for i in range(8):
         try:
-            page.evaluate("(y) => window.scrollTo(0, y)", y)
-            page.wait_for_timeout(1800)
+            page.keyboard.press("Escape")
+            page.mouse.move(1180, 840)
+            page.mouse.wheel(0, 900)
+            page.wait_for_timeout(1000)
         except Exception:
             pass
         last = find_revenue_highcharts_csv(page, keyword)
         if last.get("ok") and (last.get("csv") or "").strip():
-            last["scroll_y"] = y
+            last["scroll_loop"] = i + 1
             return last
-    return last
+        menu_result = download_revenue_csv_via_menu(page, keyword)
+        if menu_result.get("ok") and (menu_result.get("csv") or "").strip():
+            menu_result["scroll_loop"] = i + 1
+            menu_result["previous_js_result"] = {k: v for k, v in last.items() if k != "csv"}
+            return menu_result
+
+    return {"ok": False, "error": "all revenue CSV methods failed", "scroll_meta": scroll_meta, "js_result": {k: v for k, v in last.items() if k != "csv"}, "menu_result": {k: v for k, v in menu_result.items() if k != "csv"}}
 
 
 def write_revenue_run_files(run_dir: Path, company_label: str, csv_text: str, markdown_text: str, debug: dict):
@@ -891,6 +1076,7 @@ def run_revenue_csv_only(login_url: str, email: str, password: str, stock_code: 
 
             browser = p.chromium.launch(**launch_kwargs)
             context = browser.new_context(
+                accept_downloads=True,
                 viewport={"width": 1440, "height": 1000},
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -1064,7 +1250,7 @@ def run_revenue_csv_only(login_url: str, email: str, password: str, stock_code: 
 # Page UI
 # -----------------------------
 
-st.title("UAnalyze 產業情報小助理：v2 測試版")
+st.title("UAnalyze 產業情報小助理：v2 測試版 scrollfix")
 st.caption("第一區塊維持原本穩定爬蟲；第二區塊可獨立抓累計月營收追蹤 CSV。兩個區塊共用同一組 Email、密碼、股票代號。")
 
 with st.expander("登入與爬蟲設定", expanded=True):
@@ -1195,6 +1381,7 @@ if st.button("開始長時間爬取產業情報欄位"):
             browser = p.chromium.launch(**launch_kwargs)
 
             context = browser.new_context(
+                accept_downloads=True,
                 viewport={"width": 1440, "height": 1000},
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
