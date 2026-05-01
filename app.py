@@ -1496,6 +1496,155 @@ def try_highcharts_csv_api_multi(page, spec: dict) -> dict:
         return {"ok": False, "error": str(e)[:300]}
 
 
+
+
+def install_browser_download_capture_patch(page) -> dict:
+    """在頁面裡攔截 Highcharts 產生的 a[download] / blob / data URL。避免手機雲端環境 download event 抓不到。"""
+    try:
+        return page.evaluate(
+            r"""
+            () => {
+                window.__uanalyzeDownloads = [];
+                window.__uanalyzeBlobTexts = window.__uanalyzeBlobTexts || {};
+                if (!window.__uanalyzeDownloadPatchInstalled) {
+                    window.__uanalyzeDownloadPatchInstalled = true;
+                    const origCreateObjectURL = URL.createObjectURL.bind(URL);
+                    URL.createObjectURL = function(obj) {
+                        const url = origCreateObjectURL(obj);
+                        try {
+                            if (obj && typeof obj.text === 'function') {
+                                obj.text().then(t => {
+                                    window.__uanalyzeBlobTexts[url] = {text:t, type:obj.type || '', size:obj.size || 0, ts:Date.now()};
+                                }).catch(e => {
+                                    window.__uanalyzeBlobTexts[url] = {error:String(e), ts:Date.now()};
+                                });
+                            }
+                        } catch(e) {}
+                        return url;
+                    };
+                    const origAnchorClick = HTMLAnchorElement.prototype.click;
+                    HTMLAnchorElement.prototype.click = function() {
+                        try {
+                            const href = this.href || this.getAttribute('href') || '';
+                            const download = this.download || this.getAttribute('download') || '';
+                            if (href || download) {
+                                window.__uanalyzeDownloads.push({href, download, ts:Date.now(), source:'anchor.click'});
+                            }
+                        } catch(e) {}
+                        return origAnchorClick.apply(this, arguments);
+                    };
+                    const origAppendChild = Node.prototype.appendChild;
+                    Node.prototype.appendChild = function(child) {
+                        try {
+                            if (child && child.tagName === 'A') {
+                                const href = child.href || child.getAttribute('href') || '';
+                                const download = child.download || child.getAttribute('download') || '';
+                                if (href || download) {
+                                    window.__uanalyzeDownloads.push({href, download, ts:Date.now(), source:'appendChild(a)'});
+                                }
+                            }
+                        } catch(e) {}
+                        return origAppendChild.apply(this, arguments);
+                    };
+                }
+                return {ok:true, patched:true};
+            }
+            """
+        )
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:220]}
+
+
+def click_csv_menu_item_by_js_capture(page) -> dict:
+    """用 DOM 事件點 CSV，不走 Playwright actionability；可避開 locator.click 被浮層/座標判定卡住。"""
+    try:
+        return page.evaluate(
+            r"""
+            () => {
+                window.__uanalyzeDownloads = [];
+                function txt(el){ return (el.innerText || el.textContent || '').trim(); }
+                const items = Array.from(document.querySelectorAll('.highcharts-menu-item'));
+                const menuItems = items.map((el, index) => txt(el));
+                const target = items.find(el => {
+                    const t = txt(el);
+                    const u = t.toUpperCase().replace(/\s+/g,'');
+                    return u.includes('CSV') && (u.includes('DOWNLOAD') || t.includes('下載') || t.includes('匯出'));
+                });
+                if (!target) return {ok:false, error:'csv menu item not found by js', menuItems};
+                const r = target.getBoundingClientRect();
+                try { target.scrollIntoView({block:'center', inline:'center'}); } catch(e) {}
+                const opts = {bubbles:true, cancelable:true, view:window, clientX:r.left+r.width/2, clientY:r.top+r.height/2};
+                try { target.dispatchEvent(new MouseEvent('mouseover', opts)); } catch(e) {}
+                try { target.dispatchEvent(new MouseEvent('mousedown', opts)); } catch(e) {}
+                try { target.dispatchEvent(new MouseEvent('mouseup', opts)); } catch(e) {}
+                try { target.dispatchEvent(new MouseEvent('click', opts)); } catch(e) {}
+                try { target.click(); } catch(e) {}
+                return {ok:true, text:txt(target), rect:{top:r.top,left:r.left,width:r.width,height:r.height,bottom:r.bottom,right:r.right}, menuItems};
+            }
+            """
+        )
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:260]}
+
+
+def read_captured_browser_download(page, timeout_ms: int = 9000) -> dict:
+    """讀取剛剛 Highcharts 產生的 CSV。支援 data: URL、blob: URL、以及 createObjectURL 攔截到的 Blob 文字。"""
+    try:
+        end = time.time() + timeout_ms / 1000
+        last = None
+        while time.time() < end:
+            last = page.evaluate(
+                r"""
+                async () => {
+                    const downloads = window.__uanalyzeDownloads || [];
+                    const blobTexts = window.__uanalyzeBlobTexts || {};
+                    if (!downloads.length) return {ok:false, waiting:'no captured download yet', downloads:[]};
+                    const d = downloads[downloads.length - 1];
+                    const href = d.href || '';
+                    try {
+                        if (href.startsWith('data:')) {
+                            const comma = href.indexOf(',');
+                            const meta = href.slice(5, comma);
+                            const payload = href.slice(comma + 1);
+                            let text = '';
+                            if (meta.includes(';base64')) {
+                                try { text = new TextDecoder('utf-8').decode(Uint8Array.from(atob(payload), c => c.charCodeAt(0))); }
+                                catch(e) { text = atob(payload); }
+                            } else {
+                                text = decodeURIComponent(payload);
+                            }
+                            return {ok:true, text, filename:d.download || '', method:'captured data url', download:d};
+                        }
+                        if (href.startsWith('blob:')) {
+                            if (blobTexts[href] && blobTexts[href].text) {
+                                return {ok:true, text:blobTexts[href].text, filename:d.download || '', method:'captured blob text cache', download:d};
+                            }
+                            try {
+                                const resp = await fetch(href);
+                                const text = await resp.text();
+                                if (text) return {ok:true, text, filename:d.download || '', method:'captured blob fetch', download:d};
+                            } catch(e) {
+                                return {ok:false, waiting:'blob fetch failed', error:String(e), download:d, blobText:blobTexts[href] || null};
+                            }
+                            return {ok:false, waiting:'blob exists but text not ready', download:d, blobText:blobTexts[href] || null};
+                        }
+                        if (href) {
+                            return {ok:false, waiting:'captured href is not data/blob', download:d};
+                        }
+                        return {ok:false, waiting:'captured download without href', download:d};
+                    } catch(e) {
+                        return {ok:false, error:String(e), download:d};
+                    }
+                }
+                """
+            )
+            if isinstance(last, dict) and last.get("ok") and (last.get("text") or "").strip():
+                return last
+            page.wait_for_timeout(500)
+        return last if isinstance(last, dict) else {"ok": False, "error": "no captured download result"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:260]}
+
 def download_chart_csv_via_menu_multi(page, spec: dict) -> dict:
     scroll_meta = scroll_chart_section_into_view_multi(page, spec)
     pre_click_meta = None
@@ -1503,16 +1652,49 @@ def download_chart_csv_via_menu_multi(page, spec: dict) -> dict:
         pre_click_meta = click_section_button_multi(page, spec, spec.get("pre_click_text"))
         scroll_meta = scroll_chart_section_into_view_multi(page, spec)
 
+    # 關鍵修正：先在頁面內裝下載攔截器。Highcharts 常用 data/blob URL 觸發下載，
+    # Streamlit Cloud + Headless Chromium 有時不會丟給 Playwright download event。
+    patch_meta = install_browser_download_capture_patch(page)
+
     coord = find_chart_export_button_coord_multi(page, spec)
     if not coord.get("ok"):
-        return {"ok": False, "error": "export button not found", "scroll_meta": scroll_meta, "pre_click_meta": pre_click_meta, "coord": coord}
+        return {"ok": False, "error": "export button not found", "scroll_meta": scroll_meta, "pre_click_meta": pre_click_meta, "patch_meta": patch_meta, "coord": coord}
     try:
+        try:
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(250)
+        except Exception:
+            pass
         page.mouse.click(coord["x"], coord["y"])
-        page.wait_for_timeout(1100)
+        page.wait_for_timeout(900)
     except Exception as e:
-        return {"ok": False, "error": "click export button failed: " + str(e)[:220], "scroll_meta": scroll_meta, "pre_click_meta": pre_click_meta, "coord": coord}
+        return {"ok": False, "error": "click export button failed: " + str(e)[:220], "scroll_meta": scroll_meta, "pre_click_meta": pre_click_meta, "patch_meta": patch_meta, "coord": coord}
 
     menu_debug = []
+    js_click_meta = click_csv_menu_item_by_js_capture(page)
+    if isinstance(js_click_meta, dict):
+        menu_debug.extend(js_click_meta.get("menuItems") or [])
+    captured = read_captured_browser_download(page, timeout_ms=10000)
+    if captured.get("ok") and (captured.get("text") or "").strip():
+        try:
+            page.keyboard.press("Escape")
+        except Exception:
+            pass
+        return {
+            "ok": True,
+            "csv": captured.get("text") or "",
+            "chart_title": spec.get("label") or spec.get("keyword"),
+            "method": "JS menu click + captured Highcharts CSV",
+            "scroll_meta": scroll_meta,
+            "pre_click_meta": pre_click_meta,
+            "patch_meta": patch_meta,
+            "coord": coord,
+            "menu_items": menu_debug,
+            "js_click_meta": {k:v for k,v in js_click_meta.items() if k != "menuItems"} if isinstance(js_click_meta, dict) else js_click_meta,
+            "captured_meta": {k:v for k,v in captured.items() if k != "text"},
+            "suggested_filename": captured.get("filename") or "",
+        }
+
     try:
         items = page.locator(".highcharts-menu-item")
         for i in range(items.count()):
@@ -1521,35 +1703,52 @@ def download_chart_csv_via_menu_multi(page, spec: dict) -> dict:
                 txt = item.inner_text(timeout=1000).strip()
             except Exception:
                 txt = ""
-            menu_debug.append(txt)
+            if txt and txt not in menu_debug:
+                menu_debug.append(txt)
             upper = txt.upper().replace(" ", "")
             if "CSV" in upper and ("DOWNLOAD" in upper or "下載" in txt or "匯出" in txt):
-                with page.expect_download(timeout=25000) as download_info:
-                    item.click(timeout=6000)
+                with page.expect_download(timeout=18000) as download_info:
+                    item.click(timeout=6000, force=True)
                 download = download_info.value
                 path = download.path()
                 raw = Path(path).read_bytes() if path else b""
-                return {"ok": True, "csv": decode_downloaded_bytes(raw), "chart_title": spec.get("label") or spec.get("keyword"), "method": "Export menu Download CSV", "scroll_meta": scroll_meta, "pre_click_meta": pre_click_meta, "coord": coord, "menu_items": menu_debug, "suggested_filename": download.suggested_filename}
+                try:
+                    page.keyboard.press("Escape")
+                except Exception:
+                    pass
+                return {"ok": True, "csv": decode_downloaded_bytes(raw), "chart_title": spec.get("label") or spec.get("keyword"), "method": "Export menu Download CSV force", "scroll_meta": scroll_meta, "pre_click_meta": pre_click_meta, "patch_meta": patch_meta, "coord": coord, "menu_items": menu_debug, "js_click_meta": js_click_meta, "captured_meta": {k:v for k,v in captured.items() if k != "text"}, "suggested_filename": download.suggested_filename}
     except Exception as e:
-        menu_debug.append("menu item path failed: " + str(e)[:220])
+        menu_debug.append("force menu item path failed: " + str(e)[:220])
 
-    for txt in ["Download CSV", "下載 CSV", "下載CSV"]:
+    for txt in ["Download CSV", "下載 CSV", "下載CSV", "下載為 CSV 檔"]:
         try:
+            try:
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(250)
+                page.mouse.click(coord["x"], coord["y"])
+                page.wait_for_timeout(600)
+            except Exception:
+                pass
             loc = page.get_by_text(txt, exact=True).last
             if loc.count() > 0:
-                with page.expect_download(timeout=25000) as download_info:
-                    loc.click(timeout=6000)
+                install_browser_download_capture_patch(page)
+                with page.expect_download(timeout=12000) as download_info:
+                    loc.click(timeout=5000, force=True)
                 download = download_info.value
                 path = download.path()
                 raw = Path(path).read_bytes() if path else b""
-                return {"ok": True, "csv": decode_downloaded_bytes(raw), "chart_title": spec.get("label") or spec.get("keyword"), "method": f"text menu item {txt}", "scroll_meta": scroll_meta, "pre_click_meta": pre_click_meta, "coord": coord, "menu_items": menu_debug, "suggested_filename": download.suggested_filename}
+                try:
+                    page.keyboard.press("Escape")
+                except Exception:
+                    pass
+                return {"ok": True, "csv": decode_downloaded_bytes(raw), "chart_title": spec.get("label") or spec.get("keyword"), "method": f"text menu item {txt} force", "scroll_meta": scroll_meta, "pre_click_meta": pre_click_meta, "patch_meta": patch_meta, "coord": coord, "menu_items": menu_debug, "js_click_meta": js_click_meta, "captured_meta": {k:v for k,v in captured.items() if k != "text"}, "suggested_filename": download.suggested_filename}
         except Exception as e:
-            menu_debug.append(f"text {txt} failed: {str(e)[:140]}")
+            menu_debug.append(f"text {txt} force failed: {str(e)[:140]}")
     try:
         page.keyboard.press("Escape")
     except Exception:
         pass
-    return {"ok": False, "error": "CSV menu item not clicked/downloaded", "scroll_meta": scroll_meta, "pre_click_meta": pre_click_meta, "coord": coord, "menu_items": menu_debug}
+    return {"ok": False, "error": "CSV menu item not clicked/downloaded", "scroll_meta": scroll_meta, "pre_click_meta": pre_click_meta, "patch_meta": patch_meta, "coord": coord, "menu_items": menu_debug, "js_click_meta": js_click_meta, "captured_meta": {k:v for k,v in captured.items() if k != "text"}}
 
 
 def get_chart_csv_multi(page, spec: dict) -> dict:
