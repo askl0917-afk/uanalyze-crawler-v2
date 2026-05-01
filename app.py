@@ -1246,12 +1246,550 @@ def run_revenue_csv_only(login_url: str, email: str, password: str, stock_code: 
                 mime="application/zip",
             )
 
+
+# -----------------------------
+# 第二區塊：多圖表 CSV 下載 helpers（新增；不動第一區塊 TOPICS）
+# -----------------------------
+
+SECOND_BLOCK_CHART_SPECS = [
+    {"key":"revenue_tracking","label":"累計月營收追蹤(實際營收vs法人vs我的預估)-新版","keyword":"累計月營收追蹤","filename":"01_累計月營收追蹤.csv","match_keywords":["累計今年月營收","法人共識估計值","我的估計值","累計營收超法人預期"],"exclude_keywords":["EPS","評等"]},
+    {"key":"quarter_eps","label":"季EPS表現追蹤(實際VS法人共識)","keyword":"季EPS表現追蹤","filename":"02_季EPS表現追蹤.csv","match_keywords":["實際EPS","法人共識","季股價","季EPS超乎法人預期"],"exclude_keywords":["累計月營收","營收趨勢","毛利率表現"]},
+    {"key":"quarter_revenue","label":"季營收表現追蹤(實際VS法人共識)","keyword":"季營收表現追蹤","filename":"03_季營收表現追蹤.csv","match_keywords":["實際營收","法人共識","季營收","季營收超乎法人預期"],"exclude_keywords":["累計月營收","EPS","毛利率表現"]},
+    {"key":"quarter_gm","label":"季毛利率表現追蹤(實際VS法人共識)","keyword":"季毛利率表現追蹤","filename":"04_季毛利率表現追蹤.csv","match_keywords":["實際毛利率","法人共識","毛利率","季毛利率"],"exclude_keywords":["累計月營收","EPS","季營收表現"]},
+    {"key":"revenue_profit_quarter","label":"營收趨勢與利潤率比較圖（季度）","keyword":"營收趨勢與利潤率比較圖","filename":"05_營收趨勢與利潤率比較圖_季度.csv","match_keywords":["營業收入淨額","毛利率","營業利益率","稅後淨利率"],"exclude_keywords":["累計月營收","法人共識"],"pre_click_text":"季度"},
+    {"key":"inventory_sales_ratio","label":"存貨銷售比(月)(每季更新一次)","keyword":"存貨銷售比","filename":"06_存貨銷售比.csv","match_keywords":["存貨銷售比","每季更新一次","月"],"exclude_keywords":["合約負債","存貨細項"]},
+    {"key":"contract_liability","label":"合約負債VS佔營收比重VS季營收","keyword":"合約負債","filename":"07_合約負債VS佔營收比重VS季營收.csv","match_keywords":["合約負債","佔營收比重","季營收"],"exclude_keywords":["存貨銷售比","存貨細項"]},
+    {"key":"inventory_detail_raw","label":"存貨細項(原始科目)","keyword":"存貨細項","filename":"08_存貨細項_原始科目.csv","match_keywords":["原始科目","存貨細項","原料","在製品","製成品"],"exclude_keywords":["存貨銷售比","合約負債"]},
+]
+
+
+def decode_downloaded_bytes(raw: bytes) -> str:
+    for enc in ["utf-8-sig", "utf-8", "cp950", "big5", "latin1"]:
+        try:
+            return raw.decode(enc)
+        except Exception:
+            pass
+    return raw.decode("utf-8", errors="replace")
+
+
+def scroll_chart_section_into_view_multi(page, spec: dict) -> dict:
+    keyword = spec.get("keyword") or spec.get("label") or ""
+    dismiss_page_overlays(page)
+    try:
+        page.evaluate("window.scrollTo(0, 0)")
+        page.wait_for_timeout(600)
+    except Exception:
+        pass
+
+    # 先用 JS 找短標題，scrollIntoView 對內層捲動容器比較有效。
+    try:
+        meta = page.evaluate(
+            """
+            (keyword) => {
+                function txt(el){ return (el.innerText || el.textContent || '').trim(); }
+                function rect(el){ const r=el.getBoundingClientRect(); return {top:r.top,left:r.left,bottom:r.bottom,right:r.right,width:r.width,height:r.height}; }
+                const nodes = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,div,span,p'))
+                    .map(el => ({el, text:txt(el), rect:rect(el)}))
+                    .filter(x => x.text && x.text.includes(keyword) && x.text.length < 280 && x.rect.width > 5 && x.rect.height > 5)
+                    .sort((a,b) => a.text.length - b.text.length || a.rect.top - b.rect.top);
+                if (!nodes.length) return {ok:false, method:'js title not found'};
+                nodes[0].el.scrollIntoView({block:'center', inline:'nearest'});
+                return {ok:true, method:'js scrollIntoView title', text:nodes[0].text.slice(0,160), rect:nodes[0].rect};
+            }
+            """,
+            keyword,
+        )
+        page.wait_for_timeout(2200)
+        if isinstance(meta, dict) and meta.get("ok"):
+            return meta
+    except Exception as e:
+        meta = {"ok": False, "method": "js scroll failed", "error": str(e)[:180]}
+
+    # 備援：用 Playwright 文字定位。
+    try:
+        loc = page.get_by_text(keyword, exact=False).last
+        if loc.count() > 0:
+            loc.scroll_into_view_if_needed(timeout=12000)
+            page.wait_for_timeout(2200)
+            return {"ok": True, "method": "playwright locator scroll"}
+    except Exception as e:
+        meta = {"ok": False, "method": "locator failed", "error": str(e)[:180]}
+
+    # 最後備援：滑鼠滾輪找。
+    try:
+        page.mouse.move(1180, 820)
+        for i in range(26):
+            page.mouse.wheel(0, 760)
+            page.wait_for_timeout(650)
+            visible = page.evaluate(
+                """
+                (keyword) => {
+                    function visible(el){
+                        const r = el.getBoundingClientRect();
+                        const s = window.getComputedStyle(el);
+                        return r.width > 5 && r.height > 5 && r.bottom > 80 && r.top < window.innerHeight - 60 && s.display !== 'none' && s.visibility !== 'hidden';
+                    }
+                    return Array.from(document.querySelectorAll('body *')).some(el => visible(el) && ((el.innerText || el.textContent || '').includes(keyword)));
+                }
+                """,
+                keyword,
+            )
+            if visible:
+                return {"ok": True, "method": f"mouse wheel {i+1}"}
+    except Exception as e:
+        return {"ok": False, "method": "mouse wheel failed", "error": str(e)[:180], "last_meta": meta}
+    return {"ok": False, "method": "not found after mouse wheel", "last_meta": meta}
+
+
+def click_section_button_multi(page, spec: dict, button_text: str) -> dict:
+    keyword = spec.get("keyword") or spec.get("label") or ""
+    try:
+        result = page.evaluate(
+            """
+            ({keyword, buttonText}) => {
+                function visible(el){
+                    const r = el.getBoundingClientRect();
+                    const s = window.getComputedStyle(el);
+                    return r.width > 5 && r.height > 5 && r.bottom > 40 && r.top < window.innerHeight - 30 && s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0';
+                }
+                function rect(el){ const r=el.getBoundingClientRect(); return {top:r.top,left:r.left,bottom:r.bottom,right:r.right,width:r.width,height:r.height,x:r.left+r.width/2,y:r.top+r.height/2}; }
+                function txt(el){ return (el.innerText || el.textContent || '').trim(); }
+                const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,div,span,p'))
+                    .map(el => ({el, text:txt(el), rect:rect(el)}))
+                    .filter(x => x.text && x.text.includes(keyword) && x.text.length < 280)
+                    .sort((a,b) => a.text.length - b.text.length || a.rect.top - b.rect.top);
+                const h = headings[0] || null;
+                const nodes = Array.from(document.querySelectorAll('button, a, div, span'))
+                    .filter(visible)
+                    .map(el => ({el, text:txt(el), rect:rect(el)}))
+                    .filter(x => x.text === buttonText || x.text.replace(/\s+/g,'') === buttonText);
+                let candidates = nodes;
+                if (h) candidates = nodes.filter(x => x.rect.top >= h.rect.top - 40 && x.rect.top <= h.rect.bottom + 300);
+                if (!candidates.length) candidates = nodes;
+                candidates.sort((a,b) => {
+                    const da = h ? Math.abs(a.rect.top - h.rect.bottom) : Math.abs(a.rect.top - 180);
+                    const db = h ? Math.abs(b.rect.top - h.rect.bottom) : Math.abs(b.rect.top - 180);
+                    return da - db || a.rect.left - b.rect.left;
+                });
+                if (!candidates.length) return {ok:false, error:'button not found', heading:h ? {text:h.text, rect:h.rect} : null};
+                candidates[0].el.click();
+                return {ok:true, method:'js click nearby button', text:candidates[0].text, rect:candidates[0].rect, heading:h ? {text:h.text, rect:h.rect} : null};
+            }
+            """,
+            {"keyword": keyword, "buttonText": button_text},
+        )
+        page.wait_for_timeout(2400)
+        if isinstance(result, dict):
+            return result
+    except Exception as e:
+        result = {"ok": False, "error": str(e)[:220]}
+    try:
+        loc = page.get_by_text(button_text, exact=True).last
+        if loc.count() > 0:
+            loc.click(timeout=5000)
+            page.wait_for_timeout(2400)
+            return {"ok": True, "method": "playwright text fallback"}
+    except Exception:
+        pass
+    return result
+
+
+def find_chart_export_button_coord_multi(page, spec: dict) -> dict:
+    try:
+        return page.evaluate(
+            """
+            (spec) => {
+                const keyword = spec.keyword || spec.label || '';
+                const matchKeywords = [keyword].concat(spec.match_keywords || []).filter(Boolean);
+                const excludeKeywords = spec.exclude_keywords || [];
+                function rect(el){ const r=el.getBoundingClientRect(); return {top:r.top,left:r.left,width:r.width,height:r.height,bottom:r.bottom,right:r.right,x:r.left+r.width/2,y:r.top+r.height/2}; }
+                function txt(el){ return (el.innerText || el.textContent || '').trim(); }
+                function visibleRect(r){ return r.width > 60 && r.height > 60 && r.bottom > 40 && r.top < window.innerHeight - 30; }
+                const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,div,span,p'))
+                    .map(el => ({el, text:txt(el), rect:rect(el)}))
+                    .filter(x => x.text && x.text.includes(keyword) && x.text.length < 280)
+                    .sort((a,b) => a.text.length - b.text.length || a.rect.top - b.rect.top);
+                const heading = headings[0] || null;
+                const containers = Array.from(document.querySelectorAll('.highcharts-container'))
+                    .map((el,index)=>{
+                        const text=txt(el);
+                        const r=rect(el);
+                        let score=0;
+                        for (const kw of matchKeywords) if (kw && text.includes(kw)) score += (kw === keyword ? 1150 : 260);
+                        for (const ex of excludeKeywords) if (ex && text.includes(ex)) score -= 380;
+                        if (visibleRect(r)) score += 140;
+                        if (heading) {
+                            const dist = r.top - heading.rect.bottom;
+                            if (dist > -160 && dist < 820) score += Math.max(0, 680 - Math.abs(dist));
+                        }
+                        return {el,index,text:text.slice(0,340),rect:r,score};
+                    })
+                    .filter(x=>x.rect.width>100 && x.rect.height>100)
+                    .sort((a,b)=>b.score-a.score || a.rect.top-b.rect.top);
+                let target = containers.find(x => x.score > 0);
+                if (!target && heading) {
+                    target = containers.filter(x => x.rect.top >= heading.rect.top - 180)
+                        .sort((a,b)=>Math.abs(a.rect.top-heading.rect.bottom)-Math.abs(b.rect.top-heading.rect.bottom))[0];
+                }
+                if(!target) return {ok:false,error:'target chart container not found',keyword,heading:heading ? {text:heading.text, rect:heading.rect} : null,containers:containers.slice(0,8).map(x=>({score:x.score,text:x.text,rect:x.rect}))};
+                const buttons = Array.from(target.el.querySelectorAll('.highcharts-contextbutton, .highcharts-exporting-group, g.highcharts-button, [aria-label*="Chart context menu"], [aria-label*="menu"]'))
+                    .map(el=>({el,cls:el.getAttribute('class')||'',aria:el.getAttribute('aria-label')||'',rect:rect(el)}))
+                    .filter(x=>x.rect.width>5 && x.rect.height>5)
+                    .sort((a,b)=>{
+                        const as=(a.cls.includes('contextbutton')?100:0)+(a.cls.includes('exporting')?50:0)+a.rect.left/1000;
+                        const bs=(b.cls.includes('contextbutton')?100:0)+(b.cls.includes('exporting')?50:0)+b.rect.left/1000;
+                        return bs-as;
+                    });
+                if(buttons.length) return {ok:true,x:buttons[0].rect.x,y:buttons[0].rect.y,button:buttons[0].rect,button_class:buttons[0].cls,button_aria:buttons[0].aria,target:{score:target.score,text:target.text,rect:target.rect},heading:heading ? {text:heading.text, rect:heading.rect} : null};
+                return {ok:true,x:Math.max(target.rect.left + 20, target.rect.right - 28),y:target.rect.top + 28,estimated:true,target:{score:target.score,text:target.text,rect:target.rect},heading:heading ? {text:heading.text, rect:heading.rect} : null};
+            }
+            """,
+            spec,
+        )
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+
+
+def try_highcharts_csv_api_multi(page, spec: dict) -> dict:
+    try:
+        result = page.evaluate(
+            r"""
+            (spec) => {
+                const hc = window.Highcharts;
+                const keyword = spec.keyword || spec.label || '';
+                const matchKeywords = [keyword].concat(spec.match_keywords || []).filter(Boolean);
+                const excludeKeywords = spec.exclude_keywords || [];
+                if (!hc || !hc.charts) return {ok:false, error:'Highcharts not found'};
+                const charts = hc.charts.map((chart, index) => ({chart, index})).filter(x => x.chart);
+                const candidates = charts.map(x => {
+                    const c = x.chart;
+                    const title = (c.title && (c.title.textStr || c.title.element?.textContent)) || '';
+                    const subtitle = (c.subtitle && (c.subtitle.textStr || c.subtitle.element?.textContent)) || '';
+                    const renderText = (c.renderTo && (c.renderTo.innerText || c.renderTo.textContent)) || '';
+                    const haystack = [title, subtitle, renderText].join('\n');
+                    let score = 0;
+                    for (const kw of matchKeywords) if (kw && haystack.includes(kw)) score += (kw === keyword ? 1000 : 220);
+                    for (const ex of excludeKeywords) if (ex && haystack.includes(ex)) score -= 320;
+                    return {index:x.index, title, subtitle, text:renderText.slice(0,220), score};
+                }).sort((a,b)=>b.score-a.score);
+                const target = candidates.find(x => x.score > 0);
+                if (!target) return {ok:false, error:'target chart not found', charts:candidates.slice(0,8)};
+                const chart = hc.charts[target.index];
+                if (typeof chart.getCSV === 'function') return {ok:true, csv:chart.getCSV(), chart_title:target.title || target.subtitle || keyword, chart_index:target.index, method:'Highcharts.getCSV'};
+                if (typeof chart.getDataRows === 'function') {
+                    const rows = chart.getDataRows();
+                    const esc = (v) => {
+                        if (v === null || v === undefined) return '';
+                        const s = String(v);
+                        if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+                        return s;
+                    };
+                    return {ok:true, csv:rows.map(row => row.map(esc).join(',')).join('\n'), chart_title:target.title || target.subtitle || keyword, chart_index:target.index, method:'Highcharts.getDataRows'};
+                }
+                return {ok:false, error:'target chart found but CSV API unavailable', chart_index:target.index, chart_title:target.title || keyword};
+            }
+            """,
+            spec,
+        )
+        return result if isinstance(result, dict) else {"ok": False, "error": "unexpected JS result"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+
+
+def download_chart_csv_via_menu_multi(page, spec: dict) -> dict:
+    scroll_meta = scroll_chart_section_into_view_multi(page, spec)
+    pre_click_meta = None
+    if spec.get("pre_click_text"):
+        pre_click_meta = click_section_button_multi(page, spec, spec.get("pre_click_text"))
+        scroll_meta = scroll_chart_section_into_view_multi(page, spec)
+
+    coord = find_chart_export_button_coord_multi(page, spec)
+    if not coord.get("ok"):
+        return {"ok": False, "error": "export button not found", "scroll_meta": scroll_meta, "pre_click_meta": pre_click_meta, "coord": coord}
+    try:
+        page.mouse.click(coord["x"], coord["y"])
+        page.wait_for_timeout(1100)
+    except Exception as e:
+        return {"ok": False, "error": "click export button failed: " + str(e)[:220], "scroll_meta": scroll_meta, "pre_click_meta": pre_click_meta, "coord": coord}
+
+    menu_debug = []
+    try:
+        items = page.locator(".highcharts-menu-item")
+        for i in range(items.count()):
+            item = items.nth(i)
+            try:
+                txt = item.inner_text(timeout=1000).strip()
+            except Exception:
+                txt = ""
+            menu_debug.append(txt)
+            upper = txt.upper().replace(" ", "")
+            if "CSV" in upper and ("DOWNLOAD" in upper or "下載" in txt or "匯出" in txt):
+                with page.expect_download(timeout=25000) as download_info:
+                    item.click(timeout=6000)
+                download = download_info.value
+                path = download.path()
+                raw = Path(path).read_bytes() if path else b""
+                return {"ok": True, "csv": decode_downloaded_bytes(raw), "chart_title": spec.get("label") or spec.get("keyword"), "method": "Export menu Download CSV", "scroll_meta": scroll_meta, "pre_click_meta": pre_click_meta, "coord": coord, "menu_items": menu_debug, "suggested_filename": download.suggested_filename}
+    except Exception as e:
+        menu_debug.append("menu item path failed: " + str(e)[:220])
+
+    for txt in ["Download CSV", "下載 CSV", "下載CSV"]:
+        try:
+            loc = page.get_by_text(txt, exact=True).last
+            if loc.count() > 0:
+                with page.expect_download(timeout=25000) as download_info:
+                    loc.click(timeout=6000)
+                download = download_info.value
+                path = download.path()
+                raw = Path(path).read_bytes() if path else b""
+                return {"ok": True, "csv": decode_downloaded_bytes(raw), "chart_title": spec.get("label") or spec.get("keyword"), "method": f"text menu item {txt}", "scroll_meta": scroll_meta, "pre_click_meta": pre_click_meta, "coord": coord, "menu_items": menu_debug, "suggested_filename": download.suggested_filename}
+        except Exception as e:
+            menu_debug.append(f"text {txt} failed: {str(e)[:140]}")
+    try:
+        page.keyboard.press("Escape")
+    except Exception:
+        pass
+    return {"ok": False, "error": "CSV menu item not clicked/downloaded", "scroll_meta": scroll_meta, "pre_click_meta": pre_click_meta, "coord": coord, "menu_items": menu_debug}
+
+
+def get_chart_csv_multi(page, spec: dict) -> dict:
+    dismiss_page_overlays(page)
+    scroll_meta = scroll_chart_section_into_view_multi(page, spec)
+    api_result = try_highcharts_csv_api_multi(page, spec)
+    if api_result.get("ok") and (api_result.get("csv") or "").strip():
+        api_result["scroll_meta"] = scroll_meta
+        return api_result
+    menu_result = download_chart_csv_via_menu_multi(page, spec)
+    if menu_result.get("ok") and (menu_result.get("csv") or "").strip():
+        menu_result["previous_api_result"] = {k: v for k, v in api_result.items() if k != "csv"}
+        return menu_result
+    return {"ok": False, "error": "chart CSV failed", "api_result": {k: v for k, v in api_result.items() if k != "csv"}, "menu_result": {k: v for k, v in menu_result.items() if k != "csv"}}
+
+
+def build_second_block_combined_text(company_label: str, results: list) -> str:
+    parts = ["# UAnalyze 第二區塊 CSV 擷取結果", "", f"- 公司：{company_label}", f"- 擷取時間：{human_now()}", f"- 成功：{sum(1 for r in results if r.get('ok'))}/{len(results)}", "", "---", ""]
+    for idx, r in enumerate(results, start=1):
+        spec = r.get("spec") or {}
+        label = spec.get("label") or spec.get("keyword") or f"CSV {idx}"
+        parts += [f"## {idx}. {label}", ""]
+        if r.get("ok"):
+            parts += [f"- 檔名：{spec.get('filename')}", f"- 擷取方式：{r.get('method') or ''}"]
+            if r.get("suggested_filename"):
+                parts.append(f"- 原始下載檔名：{r.get('suggested_filename')}")
+            parts += ["", "```csv", r.get("csv") or "", "```"]
+        else:
+            parts += ["- 狀態：失敗", f"- 原因：{r.get('error') or 'unknown'}"]
+        parts += ["", "---", ""]
+    return "\n".join(parts)
+
+
+def write_second_block_files(run_dir: Path, company_label: str, results: list, debug: dict):
+    run_dir.mkdir(parents=True, exist_ok=True)
+    csv_dir = run_dir / "second_block_csv"
+    csv_dir.mkdir(exist_ok=True)
+    manifest = []
+    for result in results:
+        spec = result.get("spec") or {}
+        filename = spec.get("filename") or f"{safe_name(spec.get('label') or spec.get('key') or 'chart')}.csv"
+        manifest.append({"key": spec.get("key"), "label": spec.get("label"), "filename": filename, "ok": bool(result.get("ok")), "method": result.get("method"), "error": result.get("error"), "suggested_filename": result.get("suggested_filename")})
+        if result.get("ok") and (result.get("csv") or "").strip():
+            (csv_dir / filename).write_text(result.get("csv") or "", encoding="utf-8-sig")
+        else:
+            (csv_dir / (Path(filename).stem + "_FAILED.json")).write_text(json.dumps({k: v for k, v in result.items() if k != "csv"}, ensure_ascii=False, indent=2), encoding="utf-8")
+    combined_text = build_second_block_combined_text(company_label, results)
+    (run_dir / "_SECOND_BLOCK_ALL_CSV.md").write_text(combined_text, encoding="utf-8")
+    (run_dir / "second_block_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    (run_dir / "debug_info.json").write_text(json.dumps(debug, ensure_ascii=False, indent=2), encoding="utf-8")
+    return combined_text, manifest
+
+
+def display_second_block_results(run_dir: Path, company_label: str, results: list, debug: dict):
+    combined_text, manifest = write_second_block_files(run_dir, company_label, results, debug)
+    ok_count = sum(1 for r in results if r.get("ok"))
+    total = len(results)
+    if ok_count == total:
+        st.success(f"第二區塊完成：{ok_count}/{total} 個 CSV 全部取得。")
+    elif ok_count > 0:
+        st.warning(f"第二區塊部分完成：{ok_count}/{total} 個 CSV 取得。失敗項目已放進診斷 ZIP。")
+    else:
+        st.error("第二區塊沒有成功取得 CSV。請下載診斷 ZIP。")
+    copy_button(combined_text, "一鍵複製第二區塊全部 CSV")
+    st.text_area("第二區塊全部 CSV / 診斷摘要", combined_text, height=520)
+    st.download_button(label="下載第二區塊完整 ZIP", data=build_zip_bytes(run_dir), file_name=f"{run_dir.name}.zip", mime="application/zip")
+
+    for idx, result in enumerate(results, start=1):
+        spec = result.get("spec") or {}
+        label = spec.get("label") or spec.get("keyword") or f"CSV {idx}"
+        with st.expander(("✅ " if result.get("ok") else "❌ ") + label, expanded=False):
+            if result.get("ok"):
+                csv_text = result.get("csv") or ""
+                copy_button(csv_text, f"一鍵複製：{label}")
+                st.text_area(f"{label} CSV", csv_text, height=260, key=f"csv_area_{run_dir.name}_{idx}")
+                st.download_button(label=f"下載 CSV：{label}", data=csv_text.encode("utf-8-sig"), file_name=spec.get("filename") or f"{safe_name(label)}.csv", mime="text/csv", key=f"download_csv_{run_dir.name}_{idx}")
+            else:
+                st.json({k: v for k, v in result.items() if k != "csv"})
+
+
+def capture_second_block_csvs(page, company_label: str, run_dir: Path, debug: dict, progress=None, base_progress: int = 55, log_func=None, status_box=None):
+    results = []
+    total = len(SECOND_BLOCK_CHART_SPECS)
+    for idx, spec in enumerate(SECOND_BLOCK_CHART_SPECS, start=1):
+        if status_box:
+            status_box.write(f"第二區塊 {idx}/{total}：{spec['label']}")
+        if log_func:
+            log_func(f"第二區塊 {idx}/{total}：{spec['label']}")
+        result = get_chart_csv_multi(page, spec)
+        result["spec"] = spec
+        result["captured_at"] = human_now()
+        results.append(result)
+        try:
+            (run_dir / f"second_block_{idx:02d}_{safe_name(spec.get('key'))}.png").write_bytes(page.screenshot(full_page=True))
+        except Exception:
+            pass
+        if log_func:
+            log_func(("完成：" if result.get("ok") else "失敗：") + spec["label"])
+        if progress:
+            progress.progress(min(98, base_progress + int(idx / total * (98 - base_progress))))
+    debug["second_block_results_meta"] = [{k: v for k, v in r.items() if k != "csv"} for r in results]
+    return results
+
+
+def run_second_block_csvs_only(login_url: str, email: str, password: str, stock_code: str, wait_seconds: int, show_intermediate_images: bool):
+    company_label = normalize_stock_code(stock_code)
+    run_id = f"{now_stamp()}_{safe_name(company_label)}_second_block_csvs"
+    run_dir = RUNS_DIR / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    progress = st.progress(0)
+    status_box = st.empty()
+    log_box = st.empty()
+    logs = []
+
+    def log(msg: str):
+        line = f"[{human_now()}] {msg}"
+        logs.append(line)
+        log_box.text("\n".join(logs[-14:]))
+        try:
+            (run_dir / "run_log.txt").write_text("\n".join(logs), encoding="utf-8")
+        except Exception:
+            pass
+
+    try:
+        if not email or not password:
+            st.error("請先在上方輸入 UAnalyze Email 和密碼。")
+            st.stop()
+        if not company_label:
+            st.error("請先在上方輸入股票代號，只填數字，例如 3030。")
+            st.stop()
+        st.info("第二區塊獨立執行：登入一次、切換一次股票，接著一次下載全部指定 CSV。")
+        install = ensure_playwright_chromium()
+        if install["returncode"] != 0:
+            st.error("Playwright Chromium 安裝 / 檢查失敗。")
+            st.code(install["stdout"] + "\n" + install["stderr"])
+            st.stop()
+        from playwright.sync_api import sync_playwright
+        debug = {"run_id": run_id, "company_label": company_label, "mode": "second_block_csvs_only", "chart_specs": SECOND_BLOCK_CHART_SPECS, "started_at": human_now()}
+        with sync_playwright() as p:
+            sys_chrome = install.get("system_chromium") or system_chromium_path()
+            launch_kwargs = {"headless": True, "args": ["--no-sandbox", "--disable-dev-shm-usage"]}
+            if sys_chrome:
+                launch_kwargs["executable_path"] = sys_chrome
+                log(f"使用系統 Chromium：{sys_chrome}")
+            browser = p.chromium.launch(**launch_kwargs)
+            context = browser.new_context(accept_downloads=True, viewport={"width": 1440, "height": 1000}, user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+            page = context.new_page()
+            page.set_default_timeout(60000)
+            page.set_default_navigation_timeout(90000)
+
+            status_box.write("登入 UAnalyze 中...")
+            log("登入 UAnalyze")
+            page.goto(login_url, wait_until="domcontentloaded", timeout=90000)
+            page.wait_for_timeout(7000)
+            blocker_actions = close_blockers(page)
+            fill_result = fill_like_human(page, email, password)
+            login_methods = click_login(page)
+            try:
+                page.wait_for_load_state("networkidle", timeout=25000)
+            except Exception:
+                pass
+            page.wait_for_timeout(wait_seconds * 1000)
+            progress.progress(15)
+            debug.update({"blocker_actions": blocker_actions, "fill_result": fill_result, "login_methods": login_methods, "login_title": page.title(), "login_url_after": page.url})
+            (run_dir / "debug_login_text.txt").write_text(extract_body_text(page), encoding="utf-8")
+            log(f"登入後：{page.title()} / {page.url}")
+            if show_intermediate_images:
+                try:
+                    st.image(page.screenshot(full_page=True), caption="第二區塊：登入後截圖")
+                except Exception:
+                    pass
+
+            status_box.write("開啟虎八速覽中...")
+            log("開啟虎八速覽")
+            huba_actions = click_huba_quick_view(page)
+            try:
+                page.wait_for_load_state("networkidle", timeout=25000)
+            except Exception:
+                pass
+            page.wait_for_timeout(7000)
+            progress.progress(30)
+            debug.update({"huba_actions": huba_actions, "huba_title": page.title(), "huba_url": page.url})
+            (run_dir / "debug_huba_text.txt").write_text(extract_body_text(page), encoding="utf-8")
+            log(f"虎八速覽：{page.title()} / {page.url}")
+
+            status_box.write(f"切換股票代號：{company_label} ...")
+            log(f"切換股票代號：{company_label}")
+            stock_actions = switch_stock(page, company_label)
+            try:
+                page.wait_for_load_state("networkidle", timeout=25000)
+            except Exception:
+                pass
+            page.wait_for_timeout(8000)
+            after_stock_text = extract_body_text(page)
+            current_code_after_switch = detect_current_stock_code(after_stock_text)
+            debug.update({"stock_actions": stock_actions, "after_stock_title": page.title(), "after_stock_url": page.url, "current_code_after_switch": current_code_after_switch})
+            (run_dir / "debug_after_stock_text.txt").write_text(after_stock_text, encoding="utf-8")
+            try:
+                (run_dir / "after_stock_screenshot.png").write_bytes(page.screenshot(full_page=True))
+            except Exception:
+                pass
+            progress.progress(45)
+            log(f"切換股票後：{page.title()} / {page.url} / current={current_code_after_switch or 'unknown'}")
+            if current_code_after_switch and current_code_after_switch != company_label:
+                st.error(f"股票代號沒有成功切換：目前仍是 {current_code_after_switch}，目標是 {company_label}。已停止抓 CSV，避免抓錯公司。")
+                st.download_button(label="下載第二區塊切換失敗診斷 ZIP", data=build_zip_bytes(run_dir), file_name=f"{run_id}_switch_failed.zip", mime="application/zip")
+                browser.close()
+                st.stop()
+            elif not current_code_after_switch:
+                st.warning("無法從頁面文字確認目前股票代號，仍會繼續抓 CSV；若結果不是目標股票，請下載 ZIP 查看 after_stock_screenshot.png。")
+
+            results = capture_second_block_csvs(page, company_label, run_dir, debug, progress=progress, base_progress=48, log_func=log, status_box=status_box)
+            try:
+                (run_dir / "second_block_final_screenshot.png").write_bytes(page.screenshot(full_page=True))
+            except Exception:
+                pass
+            browser.close()
+            debug["finished_at"] = human_now()
+            progress.progress(100)
+            status_box.write("第二區塊完成。")
+            log("第二區塊完成")
+            display_second_block_results(run_dir, company_label, results, debug)
+            return
+    except Exception as e:
+        st.error("第二區塊獨立流程失敗。")
+        st.exception(e)
+        try:
+            (run_dir / "error.txt").write_text(str(e), encoding="utf-8")
+        except Exception:
+            pass
+        if run_dir.exists() and any(run_dir.iterdir()):
+            st.download_button(label="下載第二區塊暫存 ZIP", data=build_zip_bytes(run_dir), file_name=f"{run_id}_partial.zip", mime="application/zip")
+
+
 # -----------------------------
 # Page UI
 # -----------------------------
 
-st.title("UAnalyze 產業情報小助理：v2 測試版 scrollfix")
-st.caption("第一區塊維持原本穩定爬蟲；第二區塊可獨立抓累計月營收追蹤 CSV。兩個區塊共用同一組 Email、密碼、股票代號。")
+st.title("UAnalyze 產業情報小助理：v2 測試版 multi-csv")
+st.caption("第一區塊維持原本穩定爬蟲；第二區塊可獨立一次下載多張圖表 CSV。兩個區塊共用同一組 Email、密碼、股票代號。")
 
 with st.expander("登入與爬蟲設定", expanded=True):
     login_url = st.text_input("UAnalyze 登入頁網址", value="https://pro.uanalyze.com.tw/login-page")
@@ -1640,30 +2178,35 @@ if st.button("開始長時間爬取產業情報欄位"):
             )
 
 st.divider()
-st.header("第二區塊：累計月營收追蹤 CSV")
-st.caption("可獨立執行：只登入一次、進虎八速覽、輸入一次股票代號，然後直接擷取『累計月營收追蹤』CSV；不會跑第一區塊的產業情報欄位。")
+st.header("第二區塊：圖表 CSV 一次下載")
+st.caption("可獨立執行：只登入一次、進虎八速覽、輸入一次股票代號，然後依序下載累計月營收、季 EPS、季營收、季毛利率、營收趨勢與利潤率季度、存貨銷售比、合約負債、存貨細項等 CSV；不會跑第一區塊的產業情報欄位。")
 
-if st.button("只抓第二區塊：累計月營收 CSV", key="run_revenue_only"):
-    run_revenue_csv_only(login_url, email, password, stock_code, wait_seconds, show_intermediate_images)
+with st.expander("本次會下載的 CSV 清單", expanded=True):
+    for i, spec in enumerate(SECOND_BLOCK_CHART_SPECS, start=1):
+        note = "（會先點季度）" if spec.get("pre_click_text") else ""
+        st.write(f"{i}. {spec['label']} {note}")
 
-latest_revenue = None
+if st.button("只抓第二區塊：全部圖表 CSV", key="run_second_block_csvs_only"):
+    run_second_block_csvs_only(login_url, email, password, stock_code, wait_seconds, show_intermediate_images)
+
+latest_second_block = None
 for rd in latest_run_dirs(limit=10):
-    csv_path = rd / "revenue_tracking.csv"
-    if csv_path.exists() and csv_path.read_text(encoding="utf-8").strip():
-        latest_revenue = (rd, csv_path.read_text(encoding="utf-8"))
+    combined_path = rd / "_SECOND_BLOCK_ALL_CSV.md"
+    if combined_path.exists() and combined_path.read_text(encoding="utf-8").strip():
+        latest_second_block = (rd, combined_path.read_text(encoding="utf-8"))
         break
 
-if latest_revenue:
-    rd, rev_csv = latest_revenue
-    st.success(f"已找到最近一次累計月營收 CSV：{rd.name}")
-    copy_button(rev_csv, "一鍵複製最近一次累計月營收 CSV")
-    st.text_area("最近一次累計月營收 CSV", rev_csv, height=420)
+if latest_second_block:
+    rd, combined_text = latest_second_block
+    st.success(f"已找到最近一次第二區塊 CSV：{rd.name}")
+    copy_button(combined_text, "一鍵複製最近一次第二區塊全部 CSV")
+    st.text_area("最近一次第二區塊全部 CSV", combined_text, height=420)
     st.download_button(
-        label="下載最近一次累計月營收 CSV",
-        data=rev_csv.encode("utf-8-sig"),
-        file_name=f"{rd.name}_revenue_tracking.csv",
-        mime="text/csv",
-        key="download_latest_revenue_csv",
+        label="下載最近一次第二區塊完整 ZIP",
+        data=build_zip_bytes(rd),
+        file_name=f"{rd.name}.zip",
+        mime="application/zip",
+        key="download_latest_second_block_zip",
     )
 else:
-    st.info("目前還沒有累計月營收 CSV。可直接按上方「只抓第二區塊：累計月營收 CSV」獨立執行。")
+    st.info("目前還沒有第二區塊多圖表 CSV。可直接按上方「只抓第二區塊：全部圖表 CSV」獨立執行。")
