@@ -753,9 +753,129 @@ def choose_stock_in_database(page, stock_code: str) -> List[str]:
 
 
 def click_transcript_tab(page) -> List[str]:
-    """只操作上方橫向功能列的「⭐逐字稿」，不要點到正文的產品說明。"""
+    """
+    先用上方 bar 右側白色三條線選單找「逐字稿」。
+    這是目前最穩的路徑：不要去商城，也不要點正文裡的逐字稿文字。
+    """
     actions: List[str] = []
 
+    def click_transcript_chip_from_open_menu(tag: str) -> bool:
+        try:
+            clicked = page.evaluate(
+                """
+                () => {
+                  function visible(el){
+                    const r=el.getBoundingClientRect(); const s=getComputedStyle(el);
+                    return r.width>8 && r.height>8 && s.display!=='none' && s.visibility!=='hidden' && s.opacity!=='0' && r.bottom>0 && r.top<window.innerHeight;
+                  }
+                  function norm(t){ return (t||'').replace(/\s+/g,'').trim(); }
+                  const nodes = Array.from(document.querySelectorAll('a,button,[role="button"],.v-chip,.v-btn,span,div,li'))
+                    .filter(visible)
+                    .map(el => {
+                      const r=el.getBoundingClientRect(); const a=el.closest('a');
+                      const text=(el.innerText||'').replace(/\s+/g,' ').trim();
+                      const parent=(el.parentElement && el.parentElement.innerText || '').replace(/\s+/g,' ').trim().slice(0,600);
+                      return {el, text, n:norm(text), parent, top:r.top, left:r.left, width:r.width, height:r.height, href:a?a.href:''};
+                    })
+                    .filter(x => x.n === '逐字稿' || x.n === '⭐逐字稿')
+                    .filter(x => !x.href.includes('/e-com/'))
+                    .filter(x => !x.parent.includes('產品目錄') && !x.parent.includes('產品說明'))
+                    .sort((a,b) => {
+                      const as = (a.parent.includes('常用分析') ? -1000 : 0) + a.top/10 + a.left/1000 + a.width/10;
+                      const bs = (b.parent.includes('常用分析') ? -1000 : 0) + b.top/10 + b.left/1000 + b.width/10;
+                      return as-bs;
+                    });
+                  if(!nodes.length) return {ok:false, reason:'no exact transcript chip in menu'};
+                  const t = nodes[0];
+                  const clickEl = t.el.closest('a,button,[role="button"],.v-chip,.v-btn') || t.el;
+                  clickEl.scrollIntoView({block:'center', inline:'center'});
+                  clickEl.click();
+                  return {ok:true, text:t.text, top:t.top, left:t.left, width:t.width, height:t.height, href:t.href, parent:t.parent.slice(0,180)};
+                }
+                """
+            )
+            actions.append(f"click transcript chip from menu {tag}: " + json.dumps(clicked, ensure_ascii=False)[:600])
+            if isinstance(clicked, dict) and clicked.get("ok"):
+                page.wait_for_timeout(6000)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=20000)
+                except Exception:
+                    pass
+                return True
+        except Exception as e:
+            actions.append(f"click transcript chip from menu failed {tag}: {str(e)[:120]}")
+        return False
+
+    def open_top_bar_menu(tag: str) -> bool:
+        try:
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(500)
+        except Exception:
+            pass
+        try:
+            opened = page.evaluate(
+                """
+                () => {
+                  function visible(el){
+                    const r=el.getBoundingClientRect(); const s=getComputedStyle(el);
+                    return r.width>10 && r.height>10 && s.display!=='none' && s.visibility!=='hidden' && s.opacity!=='0' && r.bottom>0 && r.top<window.innerHeight;
+                  }
+                  function txt(el){ return (el.innerText||el.getAttribute('aria-label')||el.getAttribute('title')||'').replace(/\s+/g,' ').trim(); }
+                  function htmlHint(el){ return ((el.className||'') + ' ' + (el.outerHTML||'').slice(0,500)).toString(); }
+                  const vw = window.innerWidth || 1440;
+                  const nodes = Array.from(document.querySelectorAll('button,[role="button"],.v-btn,i,svg,span,div'))
+                    .filter(visible)
+                    .map(el => { const r=el.getBoundingClientRect(); const h=htmlHint(el); return {el, text:txt(el), hint:h, top:r.top, left:r.left, width:r.width, height:r.height, cx:r.left+r.width/2, cy:r.top+r.height/2}; })
+                    .filter(x => x.top >= 0 && x.top < 95)
+                    .filter(x => x.left > Math.min(260, vw*0.18) && x.left < vw - 120)
+                    .filter(x => x.width <= 80 && x.height <= 70)
+                    .filter(x => /mdi-menu|menu|bars|hamburger|fa-bars|三條|選單/i.test(x.hint + ' ' + x.text) || (x.text === '' && x.width >= 18 && x.height >= 18))
+                    .sort((a,b) => {
+                      const ah = /mdi-menu|menu|bars|hamburger|fa-bars/i.test(a.hint) ? -1000 : 0;
+                      const bh = /mdi-menu|menu|bars|hamburger|fa-bars/i.test(b.hint) ? -1000 : 0;
+                      const ar = Math.abs(a.left - vw*0.74);
+                      const br = Math.abs(b.left - vw*0.74);
+                      return (ah-bh) || (ar-br) || (a.width-b.width);
+                    });
+                  if(nodes.length){
+                    const t = nodes[0];
+                    const clickEl = t.el.closest('button,[role="button"],.v-btn') || t.el;
+                    clickEl.click();
+                    return {ok:true, method:'dom-menu-icon', text:t.text, top:t.top, left:t.left, width:t.width, height:t.height, hint:t.hint.slice(0,120)};
+                  }
+                  return {ok:false, reason:'no menu icon candidate'};
+                }
+                """
+            )
+            actions.append(f"open top bar menu {tag}: " + json.dumps(opened, ensure_ascii=False)[:600])
+            if isinstance(opened, dict) and opened.get("ok"):
+                page.wait_for_timeout(1800)
+                return True
+        except Exception as e:
+            actions.append(f"open top bar menu failed {tag}: {str(e)[:120]}")
+
+        # 座標備援：桌面版白色三條線大約在上方 bar 右側，約視窗寬 76% 位置。
+        try:
+            size = page.viewport_size or {"width": 1440, "height": 1000}
+            x = int(size.get("width", 1440) * 0.765)
+            y = 44
+            page.mouse.click(x, y)
+            page.wait_for_timeout(1800)
+            actions.append(f"open top bar menu {tag}: coordinate fallback x={x}, y={y}")
+            body = extract_body_text(page)
+            return "常用分析" in body and "逐字稿" in body
+        except Exception as e:
+            actions.append(f"coordinate fallback failed {tag}: {str(e)[:120]}")
+            return False
+
+    # A. 先試使用者指出的右側白色三條線選單。
+    for attempt in range(3):
+        if open_top_bar_menu(f"attempt-{attempt+1}"):
+            if click_transcript_chip_from_open_menu(f"attempt-{attempt+1}"):
+                return actions
+        page.wait_for_timeout(1000)
+
+    # B. 備援：如果「逐字稿」本來就在上方 bar 可見，直接點。
     def click_visible_top_tab(tag: str) -> bool:
         try:
             clicked = page.evaluate(
@@ -783,7 +903,7 @@ def click_transcript_tab(page) -> List[str]:
                 }
                 """
             )
-            actions.append(f"click top transcript tab {tag}: " + json.dumps(clicked, ensure_ascii=False)[:500])
+            actions.append(f"fallback visible top transcript tab {tag}: " + json.dumps(clicked, ensure_ascii=False)[:500])
             if isinstance(clicked, dict) and clicked.get("ok"):
                 page.wait_for_timeout(5000)
                 try:
@@ -792,47 +912,11 @@ def click_transcript_tab(page) -> List[str]:
                     pass
                 return True
         except Exception as e:
-            actions.append(f"click top transcript tab failed {tag}: {str(e)[:120]}")
+            actions.append(f"fallback visible top transcript tab failed {tag}: {str(e)[:120]}")
         return False
 
-    if click_visible_top_tab("visible"):
-        return actions
-
-    # 上方 bar 是水平捲動；逐段 scrollLeft 後再找「⭐逐字稿」。
-    for pos in [0, 160, 320, 520, 760, 1000, 1300, 1700, 2200]:
-        try:
-            scrolled = page.evaluate(
-                """
-                (pos) => {
-                  function box(el){ const r=el.getBoundingClientRect(); const s=getComputedStyle(el); return r.width>120 && r.height>20 && r.top>=0 && r.top<125 && s.display!=='none' && s.visibility!=='hidden'; }
-                  let n=0;
-                  for (const el of Array.from(document.querySelectorAll('*'))) {
-                    const txt=(el.innerText||'');
-                    if (box(el) && el.scrollWidth > el.clientWidth + 30 && (txt.includes('自動導航') || txt.includes('企業透視') || txt.includes('小助理') || txt.includes('逐字稿'))) { el.scrollLeft = pos; n += 1; }
-                  }
-                  return n;
-                }
-                """,
-                pos,
-            )
-            actions.append(f"scroll top nav pos={pos}, containers={scrolled}")
-            page.wait_for_timeout(900)
-            if click_visible_top_tab(f"scrollLeft={pos}"):
-                return actions
-        except Exception as e:
-            actions.append(f"scroll top nav failed pos={pos}: {str(e)[:80]}")
-
-    # 備援：模擬手指左右滑上方 tab。
-    for i in range(7):
-        try:
-            page.mouse.move(390, 52); page.mouse.down(); page.mouse.move(80, 52, steps=18); page.mouse.up()
-            page.wait_for_timeout(900)
-            if click_visible_top_tab(f"drag-{i+1}"):
-                return actions
-        except Exception as e:
-            actions.append(f"drag top nav failed {i+1}: {str(e)[:80]}")
+    click_visible_top_tab("last")
     return actions
-
 
 def looks_like_intro_or_product_page(page) -> bool:
     try:
@@ -1083,13 +1167,15 @@ def run_transcript_crawler(
                 log(f"使用系統 Chromium：{sys_chrome}")
 
             browser = p.chromium.launch(**launch_kwargs)
+            # 用桌面版 viewport 跑，跟 iPad / 桌面看到的上方 bar 與右側三條線選單一致，
+            # 避免手機版 layout 把「逐字稿」藏到另一層造成誤判。
             context = browser.new_context(
-                viewport={"width": 430, "height": 940},
-                is_mobile=True,
-                has_touch=True,
+                viewport={"width": 1440, "height": 1000},
+                is_mobile=False,
+                has_touch=False,
                 user_agent=(
-                    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-                    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
                 ),
             )
             page = context.new_page()
@@ -1303,8 +1389,8 @@ def run_transcript_crawler(
 # -----------------------------
 # Page UI
 # -----------------------------
-st.title("UAnalyze 產業情報小助理爬蟲｜逐字稿 stock-chip 修正版")
-st.caption("第二區塊改成逐字稿文字爬取；本版修正「進入逐字稿 tab 後要再點股票 chip」與「禁止把產品介紹頁當成功」。")
+st.title("UAnalyze 產業情報小助理爬蟲｜逐字稿右側選單修正版")
+st.caption("第二區塊改成逐字稿文字爬取；本版改走上方 bar 右側白色三條線選單，再點「逐字稿」。")
 
 with st.expander("登入與爬蟲設定", expanded=True):
     login_url = st.text_input("UAnalyze 登入頁網址", value=DEFAULT_LOGIN_URL)
@@ -1328,7 +1414,7 @@ st.info("這一版不下載 CSV；重點是修正左側欄入口，避免再點�
 
 st.divider()
 st.subheader("第二區塊：逐字稿爬文")
-st.write("流程：登入一次 → 虎八速覽切股票 → 左側收放欄點優分析產業資料庫 → 點逐字稿 → 逐篇抓文章文字。")
+st.write("流程：登入一次 → 虎八速覽切股票 → 左側收放欄點優分析產業資料庫 → 上方 bar 右側三條線選單 → 點逐字稿 → 逐篇抓文章文字。")
 
 if st.button("開始爬逐字稿", type="primary"):
     run_transcript_crawler(
