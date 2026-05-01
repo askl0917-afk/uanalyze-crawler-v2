@@ -1,4 +1,6 @@
-UAnalyze crawler v2 multi CSV downloadfix
+# UAnalyze Crawler v2 Revenue CSV Independent
 
-- 第二區塊只點「下載為 CSV 檔」，不使用「顯示數值」。
-- 修正 Playwright expect_download 收不到 data/blob CSV 的問題。
+- 第一區塊：維持原本產業情報欄位長時間爬蟲。
+- 第二區塊：可獨立執行，只登入一次、進虎八速覽、輸入一次股票代號，直接擷取「累計月營收追蹤(實際營收vs法人vs我的預估)-新版」CSV。
+- 股票代號欄位只輸入數字，例如 3030。
+- 第二區塊不需要先跑第一區塊；也不會改動第一區塊原本的爬蟲流程。
