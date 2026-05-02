@@ -964,7 +964,7 @@ def is_real_transcript_article(article: Dict, list_url: str) -> bool:
     """嚴格阻擋假成功：導覽頁、列表頁、虎八速覽頁、商城頁一律不算。"""
     text = article.get("text") or ""
     url = article.get("url") or ""
-    if not text or len(text) < 800:
+    if not text or len(text) < 1200:
         return False
     if url == list_url or url.endswith("/lab/dashboard/lynch-tengrower") or url.endswith("/lab/dashboard/lynch-tengrower/44308"):
         return False
@@ -973,9 +973,80 @@ def is_real_transcript_article(article: Dict, list_url: str) -> bool:
     bad = ["個股導航員", "新手必看 5 步驟", "STEP 1", "自動導航\n企業透視", "產業情報小助理", "常用分析\n自動導航", "產品目錄", "選擇方案"]
     if any(x in text for x in bad):
         return False
-    if not any(x in text for x in ["逐字稿", "法說", "法說會", "簡報", "影音"]):
+    if not any(x in text for x in ["法說會", "Q&A", "問：", "答：", "管理層", "營收", "毛利率", "資本支出", "ABF", "IC載板"]):
+        return False
+    # 強化正文長度門檻：優先 >3000；若 >=1800 必須有足夠逐字稿特徵
+    if len(text) < 3000:
+        strong_hits = sum(1 for x in ["法說會", "Q&A", "問：", "答：", "管理層", "營收", "毛利率", "資本支出", "ABF", "IC載板"] if x in text)
+        if len(text) < 1800 or strong_hits < 4:
+            return False
+    if any(x in text for x in ["虎八速覽", "EPS法人預估", "累計月營收追蹤", "個股導航員", "新手必看 5 步驟", "優分析官方數據庫"]):
         return False
     return True
+
+
+def build_failure_debug_bundle(page, run_dir: Path, reason: str, click_logs: List[Dict], menu_opened: bool):
+    ts = human_now()
+    try:
+        (run_dir / "FAIL_REASON.txt").write_text(reason, encoding="utf-8")
+    except Exception:
+        pass
+    try:
+        (run_dir / "debug_clicked_elements.json").write_text(json.dumps(click_logs, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    try:
+        (run_dir / "debug_page_meta.json").write_text(
+            json.dumps({"time": ts, "url": page.url, "title": page.title(), "menu_opened": menu_opened}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+    try:
+        body = page.evaluate("() => (document.body && document.body.innerText ? document.body.innerText : '').slice(0, 8000)")
+        (run_dir / "debug_body_8000.txt").write_text(body or "", encoding="utf-8")
+    except Exception:
+        pass
+    try:
+        candidates = page.evaluate(
+            """
+            () => {
+              function visible(el){ const r=el.getBoundingClientRect(); const s=getComputedStyle(el); return r.width>2 && r.height>2 && s.display!=='none' && s.visibility!=='hidden' && s.opacity!=='0'; }
+              return Array.from(document.querySelectorAll('a,button,[role="button"],div,span,li,p,h1,h2,h3'))
+                .map(el => {
+                  const t=(el.innerText||'').trim();
+                  const r=el.getBoundingClientRect();
+                  const a=el.closest('a');
+                  return {innerText:t.slice(0,300), tagName:el.tagName, href:a?a.href:'', boundingBox:{x:r.x,y:r.y,width:r.width,height:r.height}, visible:visible(el)};
+                })
+                .filter(x => x.innerText.includes('逐字稿'))
+                .slice(0,120);
+            }
+            """
+        )
+        (run_dir / "debug_transcript_candidates.json").write_text(json.dumps(candidates, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    try:
+        menu_dom = page.evaluate(
+            """
+            () => {
+              const bodyText=(document.body && document.body.innerText ? document.body.innerText : '').slice(0, 5000);
+              const menuNodes = Array.from(document.querySelectorAll('nav,[role="menu"],.menu,.v-menu__content,.v-overlay__content,.v-list,.v-navigation-drawer'))
+                .map(el => (el.innerText||'').trim())
+                .filter(Boolean)
+                .slice(0, 20);
+              return {bodyText, menuNodes};
+            }
+            """
+        )
+        (run_dir / "debug_menu_dump.json").write_text(json.dumps(menu_dom, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    try:
+        (run_dir / "debug_failed.png").write_bytes(page.screenshot(full_page=True))
+    except Exception:
+        pass
 
 def activate_stock_on_transcript_tab(page, stock_code: str) -> List[str]:
     """逐字稿 tab 會先停在「個股導航員」首頁；這裡再點一次股票 chip，例如 3037 欣興。"""
@@ -1184,6 +1255,7 @@ def run_transcript_crawler(
         return
 
     debug: Dict = {"run_id": run_id, "stock_code": code, "started_at": human_now(), "mode": "transcript_text_no_csv"}
+    click_logs: List[Dict] = []
 
     try:
         from playwright.sync_api import sync_playwright
@@ -1237,10 +1309,12 @@ def run_transcript_crawler(
             status_box.write("開虎八速覽、切股票，再從左側欄進優分析產業資料庫...")
             log("開虎八速覽，不從商城進入")
             huba_actions = open_huba_quick_view(page)
+            click_logs.append({"time": human_now(), "step": "open_huba", "actions": huba_actions, "url": page.url})
             close_blockers(page)
             log(f"虎八速覽：{page.title()} / {page.url}")
             log(f"切換股票代號：{code}")
             huba_stock_actions = switch_stock_on_huba(page, code)
+            click_logs.append({"time": human_now(), "step": "switch_stock_huba", "actions": huba_stock_actions, "url": page.url})
             close_blockers(page)
             (run_dir / "02_huba_after_stock.txt").write_text(extract_body_text(page), encoding="utf-8")
             if show_screenshots:
@@ -1250,6 +1324,7 @@ def run_transcript_crawler(
             status_box.write("從左側收放欄點『優分析產業資料庫』...")
             log("只鎖定左側欄：我的訂閱 → 優分析產業資料庫；禁止 e-com 商城")
             db_actions = open_industry_database_from_huba(page, code)
+            click_logs.append({"time": human_now(), "step": "open_database_sidebar", "actions": db_actions, "url": page.url})
             progress.progress(34)
             debug["open_database"] = {"huba_actions": huba_actions, "huba_stock_actions": huba_stock_actions, "db_actions": db_actions, "title": page.title(), "url": page.url}
             (run_dir / "03_database_page.txt").write_text(extract_body_text(page), encoding="utf-8")
@@ -1259,6 +1334,7 @@ def run_transcript_crawler(
             if is_wrong_mall_page(page):
                 browser.close()
                 st.error("仍然誤入商城 / e-com 商品頁，已停止；沒有輸出假成功。")
+                build_failure_debug_bundle(page, run_dir, "誤入 /e-com 商城頁", click_logs, menu_opened=False)
                 st.download_button("下載診斷 ZIP", data=build_zip_bytes(run_dir), file_name=f"{run_id}_wrong_ecom.zip", mime="application/zip")
                 return
             if not looks_like_database_feature_page(page):
@@ -1282,12 +1358,14 @@ def run_transcript_crawler(
             status_box.write("切到逐字稿分頁...")
             log("切到逐字稿分頁")
             tab_actions = click_transcript_tab(page)
+            click_logs.append({"time": human_now(), "step": "click_transcript_tab", "actions": tab_actions, "url": page.url})
             close_blockers(page)
             page.wait_for_timeout(3500)
             log(f"逐字稿 tab 點擊後：{page.title()} / {page.url}")
 
             # 逐字稿 tab 常會先停在「個股導航員」首頁；必須再點一次 3037 欣興 chip 才會出現文章列表。
             activate_actions = activate_stock_on_transcript_tab(page, code)
+            click_logs.append({"time": human_now(), "step": "activate_stock_on_transcript_tab", "actions": activate_actions, "url": page.url})
             close_blockers(page)
             page.wait_for_timeout(3500)
             progress.progress(52)
@@ -1300,8 +1378,10 @@ def run_transcript_crawler(
             if not looks_like_transcript_article_list(page, code):
                 log("逐字稿列表尚未確認，改用已驗證路徑 /lab/dashboard/lynch-tengrower/44308 直達，不走商城")
                 direct_actions = force_open_transcript_list_url(page)
+                click_logs.append({"time": human_now(), "step": "direct_transcript_url", "actions": direct_actions, "url": page.url})
                 debug["transcript_direct_fallback"] = direct_actions
                 activate_actions_2 = activate_stock_on_transcript_tab(page, code)
+                click_logs.append({"time": human_now(), "step": "activate_stock_after_direct", "actions": activate_actions_2, "url": page.url})
                 debug["transcript_activate_after_direct"] = activate_actions_2
                 close_blockers(page)
                 page.wait_for_timeout(3500)
@@ -1315,6 +1395,7 @@ def run_transcript_crawler(
             (run_dir / "candidates.json").write_text(json.dumps(candidates, ensure_ascii=False, indent=2), encoding="utf-8")
             if not candidates or not looks_like_transcript_article_list(page, code):
                 browser.close()
+                build_failure_debug_bundle(page, run_dir, "無法進入真正逐字稿列表（可能仍在虎八速覽/個股導航員/商城）", click_logs, menu_opened=True)
                 st.warning("沒有進到真正的逐字稿文章列表；已停止，沒有輸出假成功。請下載診斷 ZIP 給我看。")
                 st.write("重點檢查：05_transcript_list.txt / 05_transcript_list.png / candidates.json")
                 st.download_button(
@@ -1334,6 +1415,7 @@ def run_transcript_crawler(
                 status_box.write(f"正在抓逐字稿 {i+1}/{total}...")
                 log(f"打開逐字稿 {i+1}/{total}")
                 click_result = click_candidate_by_index(page, code, i)
+                click_logs.append({"time": human_now(), "step": f"open_candidate_{i+1}", "actions": click_result, "url": page.url})
                 candidate_text = (click_result.get("candidate") or {}).get("text", f"逐字稿 {i+1}")
                 page.wait_for_timeout(4000)
                 article = scrape_visible_article_body(page, candidate_text)
@@ -1398,6 +1480,7 @@ def run_transcript_crawler(
 
             if not articles:
                 browser.close()
+                build_failure_debug_bundle(page, run_dir, "所有候選文章都未通過逐字稿正文驗證", click_logs, menu_opened=True)
                 st.warning("已阻擋假成功：沒有任何一篇通過『真正逐字稿文章正文』檢查。請下載診斷 ZIP 給我看。")
                 st.write("重點檢查：05_transcript_list.txt、05b_transcript_list_after_direct.txt、candidates.json、FAILED_NOT_REAL_ARTICLE 檔案。")
                 st.download_button(
@@ -1484,7 +1567,7 @@ st.divider()
 st.subheader("第二區塊：逐字稿爬文")
 st.write("流程：登入一次 → 虎八速覽切股票 → 左側收放欄點優分析產業資料庫 → 上方 bar 右側三條線選單 → 點逐字稿 → 逐篇抓文章文字。")
 
-if st.button("開始爬逐字稿", type="primary"):
+if st.button("抓取逐字稿", type="primary"):
     run_transcript_crawler(
         login_url=login_url,
         email=email,
