@@ -1376,19 +1376,7 @@ def run_transcript_crawler(
             log(f"逐字稿列表頁驗證：article_list={looks_like_transcript_article_list(page, code)} / intro={looks_like_intro_or_product_page(page)} / {page.title()} / {page.url}")
 
             if not looks_like_transcript_article_list(page, code):
-                log("逐字稿列表尚未確認，改用已驗證路徑 /lab/dashboard/lynch-tengrower/44308 直達，不走商城")
-                direct_actions = force_open_transcript_list_url(page)
-                click_logs.append({"time": human_now(), "step": "direct_transcript_url", "actions": direct_actions, "url": page.url})
-                debug["transcript_direct_fallback"] = direct_actions
-                activate_actions_2 = activate_stock_on_transcript_tab(page, code)
-                click_logs.append({"time": human_now(), "step": "activate_stock_after_direct", "actions": activate_actions_2, "url": page.url})
-                debug["transcript_activate_after_direct"] = activate_actions_2
-                close_blockers(page)
-                page.wait_for_timeout(3500)
-                (run_dir / "05b_transcript_list_after_direct.txt").write_text(extract_body_text(page), encoding="utf-8")
-                if show_screenshots:
-                    (run_dir / "05b_transcript_list_after_direct.png").write_bytes(page.screenshot(full_page=True))
-                log(f"逐字稿直達後驗證：article_list={looks_like_transcript_article_list(page, code)} / intro={looks_like_intro_or_product_page(page)} / {page.title()} / {page.url}")
+                log("逐字稿列表尚未確認；維持固定流程（虎八速覽→左側優分析產業資料庫→上方三條線→逐字稿），不使用直連捷徑")
 
             candidates = collect_transcript_candidates(page, code)
             debug["initial_candidates"] = candidates
