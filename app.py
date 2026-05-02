@@ -945,6 +945,38 @@ def looks_like_transcript_article_list(page, stock_code: str) -> bool:
         return False
 
 
+
+
+def force_open_transcript_list_url(page) -> List[str]:
+    """最後保險：直接開使用者已驗證的 lab 逐字稿分頁，不走商城。"""
+    actions = []
+    try:
+        page.goto("https://pro.uanalyze.com.tw/lab/dashboard/lynch-tengrower/44308", wait_until="domcontentloaded", timeout=90000)
+        page.wait_for_timeout(6000)
+        close_blockers(page)
+        actions.append(f"direct transcript list url: {page.title()} / {page.url}")
+    except Exception as e:
+        actions.append(f"direct transcript list url failed: {str(e)[:120]}")
+    return actions
+
+
+def is_real_transcript_article(article: Dict, list_url: str) -> bool:
+    """嚴格阻擋假成功：導覽頁、列表頁、虎八速覽頁、商城頁一律不算。"""
+    text = article.get("text") or ""
+    url = article.get("url") or ""
+    if not text or len(text) < 800:
+        return False
+    if url == list_url or url.endswith("/lab/dashboard/lynch-tengrower") or url.endswith("/lab/dashboard/lynch-tengrower/44308"):
+        return False
+    if "/lab/dashboard/41873" in url or "/e-com/" in url:
+        return False
+    bad = ["個股導航員", "新手必看 5 步驟", "STEP 1", "自動導航\n企業透視", "產業情報小助理", "常用分析\n自動導航", "產品目錄", "選擇方案"]
+    if any(x in text for x in bad):
+        return False
+    if not any(x in text for x in ["逐字稿", "法說", "法說會", "簡報", "影音"]):
+        return False
+    return True
+
 def activate_stock_on_transcript_tab(page, stock_code: str) -> List[str]:
     """逐字稿 tab 會先停在「個股導航員」首頁；這裡再點一次股票 chip，例如 3037 欣興。"""
     actions: List[str] = []
@@ -1265,6 +1297,19 @@ def run_transcript_crawler(
                 (run_dir / "05_transcript_list.png").write_bytes(page.screenshot(full_page=True))
             log(f"逐字稿列表頁驗證：article_list={looks_like_transcript_article_list(page, code)} / intro={looks_like_intro_or_product_page(page)} / {page.title()} / {page.url}")
 
+            if not looks_like_transcript_article_list(page, code):
+                log("逐字稿列表尚未確認，改用已驗證路徑 /lab/dashboard/lynch-tengrower/44308 直達，不走商城")
+                direct_actions = force_open_transcript_list_url(page)
+                debug["transcript_direct_fallback"] = direct_actions
+                activate_actions_2 = activate_stock_on_transcript_tab(page, code)
+                debug["transcript_activate_after_direct"] = activate_actions_2
+                close_blockers(page)
+                page.wait_for_timeout(3500)
+                (run_dir / "05b_transcript_list_after_direct.txt").write_text(extract_body_text(page), encoding="utf-8")
+                if show_screenshots:
+                    (run_dir / "05b_transcript_list_after_direct.png").write_bytes(page.screenshot(full_page=True))
+                log(f"逐字稿直達後驗證：article_list={looks_like_transcript_article_list(page, code)} / intro={looks_like_intro_or_product_page(page)} / {page.title()} / {page.url}")
+
             candidates = collect_transcript_candidates(page, code)
             debug["initial_candidates"] = candidates
             (run_dir / "candidates.json").write_text(json.dumps(candidates, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1323,8 +1368,19 @@ def run_transcript_crawler(
 
                 if not article.get("method"):
                     article["method"] = "candidate click"
-                article["status"] = "成功" if article["clean_length"] >= 300 else "可能失敗：文字太短，請看 raw 檔"
                 article["candidate"] = click_result
+
+                real_ok = is_real_transcript_article(article, list_url)
+                article["status"] = "成功" if real_ok else "失敗：不是逐字稿文章正文，已阻擋假成功"
+                if not real_ok:
+                    file_base = f"{i+1:02d}_FAILED_NOT_REAL_ARTICLE"
+                    (run_dir / f"{file_base}.txt").write_text(article.get("text", ""), encoding="utf-8")
+                    (run_dir / f"{file_base}.json").write_text(json.dumps(article, ensure_ascii=False, indent=2), encoding="utf-8")
+                    log(f"阻擋假成功：{article.get('url')} / clean_length={article.get('clean_length')}")
+                    go_back_to_list(page, list_url)
+                    close_blockers(page)
+                    continue
+
                 articles.append(article)
 
                 file_base = f"{i+1:02d}_{safe_name(article.get('title') or candidate_text)}"
@@ -1339,6 +1395,18 @@ def run_transcript_crawler(
                 progress.progress(52 + int(((i + 1) / max(total, 1)) * 42))
                 go_back_to_list(page, list_url)
                 close_blockers(page)
+
+            if not articles:
+                browser.close()
+                st.warning("已阻擋假成功：沒有任何一篇通過『真正逐字稿文章正文』檢查。請下載診斷 ZIP 給我看。")
+                st.write("重點檢查：05_transcript_list.txt、05b_transcript_list_after_direct.txt、candidates.json、FAILED_NOT_REAL_ARTICLE 檔案。")
+                st.download_button(
+                    "下載診斷 ZIP",
+                    data=build_zip_bytes(run_dir),
+                    file_name=f"{run_id}_blocked_fake_success.zip",
+                    mime="application/zip",
+                )
+                return
 
             final_md = build_markdown(code, articles, page.title(), page.url)
             (run_dir / "_ALL_TRANSCRIPTS.md").write_text(final_md, encoding="utf-8")
@@ -1389,8 +1457,8 @@ def run_transcript_crawler(
 # -----------------------------
 # Page UI
 # -----------------------------
-st.title("UAnalyze 產業情報小助理爬蟲｜逐字稿右側選單修正版")
-st.caption("第二區塊改成逐字稿文字爬取；本版改走上方 bar 右側白色三條線選單，再點「逐字稿」。")
+st.title("UAnalyze 產業情報小助理爬蟲｜逐字稿嚴格驗證版")
+st.caption("第二區塊改成逐字稿文字爬取；本版改走上方 bar 右側白色三條線選單，再點「逐字稿」，並阻擋虎八速覽／自動導航／商城頁假成功。")
 
 with st.expander("登入與爬蟲設定", expanded=True):
     login_url = st.text_input("UAnalyze 登入頁網址", value=DEFAULT_LOGIN_URL)
