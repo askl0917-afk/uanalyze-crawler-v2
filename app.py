@@ -759,7 +759,14 @@ def click_transcript_tab(page) -> List[str]:
     """
     actions: List[str] = []
 
-    def click_transcript_chip_from_open_menu(tag: str) -> bool:
+    def page_state_sig() -> Dict:
+        try:
+            body = extract_body_text(page)
+            return {"url": page.url, "title": page.title(), "head": (body or "")[:1800]}
+        except Exception:
+            return {"url": page.url, "title": "", "head": ""}
+
+    def click_transcript_chip_from_open_menu(tag: str) -> Dict:
         try:
             clicked = page.evaluate(
                 """
@@ -790,20 +797,71 @@ def click_transcript_tab(page) -> List[str]:
                   const clickEl = t.el.closest('a,button,[role="button"],.v-chip,.v-btn') || t.el;
                   clickEl.scrollIntoView({block:'center', inline:'center'});
                   clickEl.click();
-                  return {ok:true, text:t.text, top:t.top, left:t.left, width:t.width, height:t.height, href:t.href, parent:t.parent.slice(0,180)};
+                  const ds = t.el.dataset ? JSON.parse(JSON.stringify(t.el.dataset)) : {};
+                  const onclick = (t.el.getAttribute('onclick')||'').slice(0,400);
+                  const parentHref = (t.el.parentElement && t.el.parentElement.closest && t.el.parentElement.closest('a')) ? t.el.parentElement.closest('a').href : '';
+                  return {ok:true, text:t.text, top:t.top, left:t.left, width:t.width, height:t.height, href:t.href, parent:t.parent.slice(0,180), dataset:ds, onclick, parentHref};
                 }
                 """
             )
             actions.append(f"click transcript chip from menu {tag}: " + json.dumps(clicked, ensure_ascii=False)[:600])
             if isinstance(clicked, dict) and clicked.get("ok"):
+                before = page_state_sig()
                 page.wait_for_timeout(6000)
                 try:
                     page.wait_for_load_state("networkidle", timeout=20000)
                 except Exception:
                     pass
-                return True
+                after = page_state_sig()
+                url_changed = (after.get("url") or "") != (before.get("url") or "")
+                body_changed = (after.get("head") or "") != (before.get("head") or "")
+                return {"ok": True, "clicked": clicked, "url_changed": url_changed, "body_changed": body_changed, "before": before, "after": after}
         except Exception as e:
             actions.append(f"click transcript chip from menu failed {tag}: {str(e)[:120]}")
+        return {"ok": False}
+
+    def open_transcript_from_menu_href(tag: str) -> bool:
+        try:
+            target = page.evaluate(
+                """
+                () => {
+                  function visible(el){ const r=el.getBoundingClientRect(); const s=getComputedStyle(el); return r.width>8 && r.height>8 && s.display!=='none' && s.visibility!=='hidden' && s.opacity!=='0'; }
+                  function norm(t){ return (t||'').replace(/\\s+/g,'').trim(); }
+                  const nodes = Array.from(document.querySelectorAll('a,button,[role=\"button\"],.v-chip,.v-btn,span,div,li'))
+                    .filter(visible)
+                    .map(el => {
+                      const text=(el.innerText||'').replace(/\\s+/g,' ').trim();
+                      const n=norm(text);
+                      const a=el.closest('a');
+                      const href=a?a.href:'';
+                      const onclick=(el.getAttribute('onclick')||'') + ' ' + ((el.parentElement && el.parentElement.getAttribute && el.parentElement.getAttribute('onclick')) || '');
+                      const html=((el.outerHTML||'') + ' ' + ((el.parentElement && el.parentElement.outerHTML) || '')).slice(0,1500);
+                      return {text, n, href, onclick, html};
+                    })
+                    .filter(x => x.n === '逐字稿' || x.n === '⭐逐字稿');
+                  const direct = nodes.find(x => /\\/lab\\/dashboard\\/[^\\s\"']+\\/\\d{3,}/.test((x.href||'') + ' ' + x.onclick + ' ' + x.html));
+                  const blob = direct ? ((direct.href||'') + ' ' + direct.onclick + ' ' + direct.html) : nodes.map(x => (x.href||'') + ' ' + x.onclick + ' ' + x.html).join(' ');
+                  const m = blob.match(/\\/lab\\/dashboard\\/[^\\s\"']+\\/\\d{3,}/);
+                  if (m) return {ok:true, path:m[0]};
+                  const hrefNode = nodes.find(x => x.href && x.href.includes('/lab/dashboard/') && !x.href.includes('/e-com/'));
+                  if (hrefNode) return {ok:true, path:hrefNode.href};
+                  return {ok:false};
+                }
+                """
+            )
+            actions.append(f"resolve transcript href from menu {tag}: " + json.dumps(target, ensure_ascii=False)[:600])
+            if isinstance(target, dict) and target.get("ok") and target.get("path"):
+                path = str(target.get("path"))
+                if path.startswith("/"):
+                    path = "https://pro.uanalyze.com.tw" + path
+                before = page_state_sig()
+                page.goto(path, wait_until="domcontentloaded", timeout=90000)
+                page.wait_for_timeout(5000)
+                after = page_state_sig()
+                actions.append(f"goto transcript href {tag}: {before.get('url')} -> {after.get('url')}")
+                return after.get("url") != before.get("url")
+        except Exception as e:
+            actions.append(f"open transcript from href failed {tag}: {str(e)[:120]}")
         return False
 
     def open_top_bar_menu(tag: str) -> bool:
@@ -868,12 +926,183 @@ def click_transcript_tab(page) -> List[str]:
             actions.append(f"coordinate fallback failed {tag}: {str(e)[:120]}")
             return False
 
-    # A. 先試使用者指出的右側白色三條線選單。
-    for attempt in range(3):
-        if open_top_bar_menu(f"attempt-{attempt+1}"):
-            if click_transcript_chip_from_open_menu(f"attempt-{attempt+1}"):
+    def fingerprint() -> str:
+        sig = page_state_sig()
+        return f"{sig.get('url','')}|{safe_name(sig.get('head','')[:180], max_len=200)}"
+
+    def collect_transcript_menu_candidates() -> List[Dict]:
+        try:
+            return page.evaluate(
+                """
+                () => {
+                  function vis(el){ const r=el.getBoundingClientRect(); const s=getComputedStyle(el); return r.width>0 && r.height>0 && s.display!=='none' && s.visibility!=='hidden' && s.opacity!=='0'; }
+                  const overlayRoots = Array.from(document.querySelectorAll('[role="menu"],.v-menu__content,.v-overlay__content,nav,.menu,.v-list,.v-navigation-drawer'));
+                  function inOverlay(el){ return overlayRoots.some(root => root && (root===el || root.contains(el))); }
+                  const out = [];
+                  const nodes = Array.from(document.querySelectorAll('a,button,[role="button"],li,div,span,p'));
+                  for (const el of nodes){
+                    const text=(el.innerText||'').replace(/\\s+/g,' ').trim();
+                    if(!text.includes('逐字稿')) continue;
+                    const r=el.getBoundingClientRect();
+                    const cx=Math.round(r.left+r.width/2), cy=Math.round(r.top+r.height/2);
+                    const vpIn = cx>=0 && cy>=0 && cx <= (window.innerWidth||0) && cy <= (window.innerHeight||0);
+                    const efp = vpIn ? document.elementFromPoint(cx, cy) : null;
+                    const efpTag = efp ? efp.tagName : '';
+                    const efpText = efp ? ((efp.innerText||'').replace(/\\s+/g,' ').trim().slice(0,80)) : '';
+                    const a=el.closest('a');
+                    const onclick=(el.getAttribute('onclick')||'').slice(0,300);
+                    const ds = el.dataset ? JSON.parse(JSON.stringify(el.dataset)) : {};
+                    out.push({
+                      innerText:text.slice(0,260), tagName:el.tagName, href:a?a.href:'', onclick, dataset:ds,
+                      boundingBox:{x:r.x,y:r.y,width:r.width,height:r.height,top:r.top,left:r.left,bottom:r.bottom,right:r.right},
+                      visible:vis(el), center:{x:cx,y:cy}, elementFromPoint:{tagName:efpTag,text:efpText},
+                      inOverlay:inOverlay(el),
+                    });
+                  }
+                  return out;
+                }
+                """
+            )
+        except Exception:
+            return []
+
+    def menu_clickable(c: Dict) -> bool:
+        box = c.get("boundingBox") or {}
+        center = c.get("center") or {}
+        efp = c.get("elementFromPoint") or {}
+        return (
+            bool(c.get("visible"))
+            and bool(c.get("inOverlay"))
+            and float(box.get("top", -1)) > 60
+            and float(box.get("height", 0)) > 15
+            and float(box.get("width", 0)) > 20
+            and 0 <= float(center.get("x", -1)) <= 2000
+            and 0 <= float(center.get("y", -1)) <= 2000
+            and (efp.get("tagName", "").lower() not in {"html", "body"})
+        )
+
+    state_seen: Dict[str, int] = {}
+    unchanged_streak = 0
+    stop_reason = ""
+    all_candidates: List[Dict] = []
+
+    for round_i in range(3):
+        try:
+            page.goto("https://pro.uanalyze.com.tw/lab/dashboard/lynch-tengrower", wait_until="domcontentloaded", timeout=90000)
+            page.wait_for_timeout(1200)
+        except Exception:
+            pass
+        if not open_top_bar_menu(f"round-{round_i+1}"):
+            actions.append(f"round-{round_i+1}: open menu failed")
+            continue
+        candidates = collect_transcript_menu_candidates()
+        all_candidates.extend(candidates)
+        ranked = [c for c in candidates if menu_clickable(c)][:8]
+        actions.append(f"round-{round_i+1}: candidates_total={len(candidates)}, ranked={len(ranked)}")
+        if not ranked:
+            stop_reason = "no_valid_candidate"
+            continue
+
+        for idx, c in enumerate(ranked):
+            before = page_state_sig()
+            before_fp = fingerprint()
+            click_ok = False
+            try:
+                cx = int((c.get("center") or {}).get("x", 0))
+                cy = int((c.get("center") or {}).get("y", 0))
+                page.mouse.click(cx, cy)
+                click_ok = True
+            except Exception:
+                pass
+            page.wait_for_timeout(5000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass
+            after = page_state_sig()
+            after_fp = fingerprint()
+            url_changed = before.get("url") != after.get("url")
+            body_changed = before.get("head") != after.get("head")
+            left_intro = ("個股導航員" not in (after.get("head") or ""))
+            transcript_like = looks_like_transcript_article_list(page, "") or ("問：" in (after.get("head") or "") and "答：" in (after.get("head") or ""))
+            click_log = {"round": round_i + 1, "idx": idx + 1, "candidate": c, "click_ok": click_ok, "url_changed": url_changed, "body_changed": body_changed, "left_intro": left_intro, "transcript_like": transcript_like, "before": before, "after": after}
+            actions.append("menu candidate click: " + json.dumps(click_log, ensure_ascii=False)[:1000])
+
+            state_seen[after_fp] = state_seen.get(after_fp, 0) + 1
+            if state_seen[after_fp] >= 2:
+                stop_reason = "repeated_state"
+                break
+            if not url_changed and not body_changed:
+                unchanged_streak += 1
+            else:
+                unchanged_streak = 0
+            if unchanged_streak >= 5:
+                stop_reason = "too_many_unchanged_clicks"
+                break
+            if (url_changed or body_changed) and left_intro and transcript_like:
                 return actions
-        page.wait_for_timeout(1000)
+            # 失敗就回主頁重開 menu 再試下一個
+            try:
+                page.goto("https://pro.uanalyze.com.tw/lab/dashboard/lynch-tengrower", wait_until="domcontentloaded", timeout=90000)
+                page.wait_for_timeout(1000)
+                open_top_bar_menu(f"round-{round_i+1}-retry-{idx+1}")
+            except Exception:
+                pass
+        if stop_reason in {"repeated_state", "too_many_unchanged_clicks"}:
+            break
+
+    # 座標備援：最多 3 點
+    for ci, (rx, ry) in enumerate([(0.62, 0.26), (0.65, 0.32), (0.58, 0.32)], start=1):
+        try:
+            page.goto("https://pro.uanalyze.com.tw/lab/dashboard/lynch-tengrower", wait_until="domcontentloaded", timeout=90000)
+            page.wait_for_timeout(1000)
+            open_top_bar_menu(f"coord-{ci}")
+            vp = page.viewport_size or {"width": 1440, "height": 1000}
+            x = int(vp["width"] * rx)
+            y = int(vp["height"] * ry)
+            before = page_state_sig()
+            page.mouse.click(x, y)
+            page.wait_for_timeout(5000)
+            after = page_state_sig()
+            url_changed = before.get("url") != after.get("url")
+            body_changed = before.get("head") != after.get("head")
+            actions.append(f"coord fallback {ci}: x={x}, y={y}, url_changed={url_changed}, body_changed={body_changed}")
+            if (url_changed or body_changed) and ("個股導航員" not in (after.get("head") or "")):
+                return actions
+        except Exception as e:
+            actions.append(f"coord fallback {ci} failed: {str(e)[:120]}")
+
+    # DOM 階層 click 備援
+    if open_top_bar_menu("dom-escalation"):
+        try:
+            escalated = page.evaluate(
+                """
+                () => {
+                  function visible(el){ const r=el.getBoundingClientRect(); const s=getComputedStyle(el); return r.width>10 && r.height>10 && s.display!=='none' && s.visibility!=='hidden' && s.opacity!=='0'; }
+                  const nodes = Array.from(document.querySelectorAll('*'))
+                    .filter(el => (el.innerText||'').includes('逐字稿'))
+                    .slice(0,200);
+                  for (const n of nodes){
+                    const chain = [n, n.parentElement, n.parentElement && n.parentElement.parentElement].filter(Boolean);
+                    for (const c of chain){
+                      if(!visible(c)) continue;
+                      if(c.matches('a,button,[role=\"button\"],li,div[onclick],span[onclick]')){ c.click(); return {ok:true, tag:c.tagName, text:(c.innerText||'').slice(0,80)}; }
+                    }
+                  }
+                  return {ok:false};
+                }
+                """
+            )
+            actions.append("dom escalation: " + json.dumps(escalated, ensure_ascii=False)[:500])
+            page.wait_for_timeout(5000)
+            after = page_state_sig()
+            if "個股導航員" not in (after.get("head") or "") and (looks_like_transcript_article_list(page, "") or "問：" in (after.get("head") or "")):
+                return actions
+        except Exception as e:
+            actions.append(f"dom escalation failed: {str(e)[:120]}")
+
+    actions.append("STOP_REASON: " + (stop_reason or "coordinate_fallback_failed"))
+    actions.append("ALL_TRANSCRIPT_MENU_CANDIDATES: " + json.dumps(all_candidates, ensure_ascii=False)[:3000])
 
     # B. 備援：如果「逐字稿」本來就在上方 bar 可見，直接點。
     def click_visible_top_tab(tag: str) -> bool:
@@ -973,11 +1202,12 @@ def is_real_transcript_article(article: Dict, list_url: str) -> bool:
     bad = ["個股導航員", "新手必看 5 步驟", "STEP 1", "自動導航\n企業透視", "產業情報小助理", "常用分析\n自動導航", "產品目錄", "選擇方案"]
     if any(x in text for x in bad):
         return False
-    if not any(x in text for x in ["法說會", "Q&A", "問：", "答：", "管理層", "營收", "毛利率", "資本支出", "ABF", "IC載板"]):
+    transcript_keys = ["法說會", "Q&A", "問：", "答：", "管理層", "法人提問", "營收", "毛利率", "資本支出", "ABF", "IC載板"]
+    if not any(x in text for x in transcript_keys):
         return False
     # 強化正文長度門檻：優先 >3000；若 >=1800 必須有足夠逐字稿特徵
     if len(text) < 3000:
-        strong_hits = sum(1 for x in ["法說會", "Q&A", "問：", "答：", "管理層", "營收", "毛利率", "資本支出", "ABF", "IC載板"] if x in text)
+        strong_hits = sum(1 for x in transcript_keys if x in text)
         if len(text) < 1800 or strong_hits < 4:
             return False
     if any(x in text for x in ["虎八速覽", "EPS法人預估", "累計月營收追蹤", "個股導航員", "新手必看 5 步驟", "優分析官方數據庫"]):
@@ -1127,15 +1357,19 @@ def collect_transcript_candidates(page, stock_code: str) -> List[Dict]:
             (code) => {
               function visible(el){ const r=el.getBoundingClientRect(); const s=getComputedStyle(el); return r.width>40 && r.height>15 && s.display!=='none' && s.visibility!=='hidden' && s.opacity!=='0' && r.bottom>0 && r.top<window.innerHeight; }
               function clean(t){ return (t||'').replace(/\s+/g,' ').trim(); }
-              const badWords = ['產品目錄','產品說明','模組功能表','選擇方案','自動導航','企業透視','小助理','追蹤成長數據','搜尋雷達','使用教學','續約','募集達人','Cookie 技術'];
+              const badWords = ['產品目錄','產品說明','模組功能表','選擇方案','自動導航','企業透視','小助理','追蹤成長數據','搜尋雷達','使用教學','續約','募集達人','Cookie 技術','收盤價','上市','股本','最新財報','月營收'];
               const raw = Array.from(document.querySelectorAll('a,button,[role="button"],article,section,.v-card,.card,div,li'))
                 .filter(visible)
                 .map((el, idx) => { const r = el.getBoundingClientRect(); const text = clean(el.innerText || ''); const a = el.closest('a'); return {el, idx, text, top:r.top, left:r.left, width:r.width, height:r.height, href:a?a.href:'', cx:r.left + Math.min(Math.max(r.width*0.22, 24), Math.max(r.width-10, 25)), cy:r.top + Math.min(Math.max(r.height*0.35, 18), Math.max(r.height-10, 20))}; })
                 .filter(x => x.text.length >= 18 && x.text.length <= 700)
+                .filter(x => x.top >= 120)
+                .filter(x => x.top > 140 || x.height >= 80)
                 .filter(x => code ? x.text.includes(code) : true)
                 .filter(x => x.text.includes('法說') || x.text.includes('逐字稿'))
                 .filter(x => x.text.includes('法說逐字稿') || (x.text.includes('法說會') && x.text.includes('逐字稿')) || (x.text.includes('簡報') && x.text.includes('影音') && x.text.includes('法說')))
                 .filter(x => !badWords.some(b => x.text.includes(b)))
+                .filter(x => !/法說會[：:]\s*20\\d{2}[\\/-]\\d{1,2}[\\/-]\\d{1,2}/.test(x.text))
+                .filter(x => !/逐字稿[：:]\s*20\\d{2}[\\/-]\\d{1,2}[\\/-]\\d{1,2}/.test(x.text))
                 .sort((a,b) => { const as = (a.text.includes('法說逐字稿') ? -100 : 0) + (a.text.includes('簡報') ? -20 : 0) + a.text.length/50 + a.top/10; const bs = (b.text.includes('法說逐字稿') ? -100 : 0) + (b.text.includes('簡報') ? -20 : 0) + b.text.length/50 + b.top/10; return as-bs; });
               const seen = new Set(); const out = [];
               for (const x of raw) { let title = x.text; const m = title.match(new RegExp('([^\\n]{0,120}'+code+'[^\\n]{0,220}?法說[^\\n]{0,220})')); if (m) title = m[1].trim(); const key = title.slice(0, 100); if (seen.has(key)) continue; seen.add(key); out.push({idx:x.idx, text:x.text, title, top:x.top, left:x.left, width:x.width, height:x.height, cx:x.cx, cy:x.cy, href:x.href}); if (out.length >= 10) break; }
@@ -1171,10 +1405,16 @@ def click_candidate_by_index(page, stock_code: str, index: int) -> Dict:
             """,
             {"cx": c.get("cx"), "cy": c.get("cy")},
         )
+        before_url = page.url
+        before_head = (extract_body_text(page) or "")[:1800]
         if isinstance(clicked, dict) and clicked.get("ok"):
             page.wait_for_timeout(6000)
             try: page.wait_for_load_state("networkidle", timeout=20000)
             except Exception: pass
+            after_url = page.url
+            after_head = (extract_body_text(page) or "")[:1800]
+            if (not c.get("href")) and after_url == before_url and after_head == before_head:
+                return {"ok": False, "candidate": c, "candidate_count": len(candidates), "click": clicked, "error": "blank href and no page state change"}
             return {"ok": True, "candidate": c, "candidate_count": len(candidates), "click": clicked}
     except Exception:
         pass
@@ -1376,19 +1616,7 @@ def run_transcript_crawler(
             log(f"逐字稿列表頁驗證：article_list={looks_like_transcript_article_list(page, code)} / intro={looks_like_intro_or_product_page(page)} / {page.title()} / {page.url}")
 
             if not looks_like_transcript_article_list(page, code):
-                log("逐字稿列表尚未確認，改用已驗證路徑 /lab/dashboard/lynch-tengrower/44308 直達，不走商城")
-                direct_actions = force_open_transcript_list_url(page)
-                click_logs.append({"time": human_now(), "step": "direct_transcript_url", "actions": direct_actions, "url": page.url})
-                debug["transcript_direct_fallback"] = direct_actions
-                activate_actions_2 = activate_stock_on_transcript_tab(page, code)
-                click_logs.append({"time": human_now(), "step": "activate_stock_after_direct", "actions": activate_actions_2, "url": page.url})
-                debug["transcript_activate_after_direct"] = activate_actions_2
-                close_blockers(page)
-                page.wait_for_timeout(3500)
-                (run_dir / "05b_transcript_list_after_direct.txt").write_text(extract_body_text(page), encoding="utf-8")
-                if show_screenshots:
-                    (run_dir / "05b_transcript_list_after_direct.png").write_bytes(page.screenshot(full_page=True))
-                log(f"逐字稿直達後驗證：article_list={looks_like_transcript_article_list(page, code)} / intro={looks_like_intro_or_product_page(page)} / {page.title()} / {page.url}")
+                log("逐字稿列表尚未確認；維持固定流程（虎八速覽→左側優分析產業資料庫→上方三條線→逐字稿），不使用直連捷徑")
 
             candidates = collect_transcript_candidates(page, code)
             debug["initial_candidates"] = candidates
