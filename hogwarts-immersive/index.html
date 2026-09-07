@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#090d14">
+<title>Hogwarts Immersive Castle</title>
+<style>
+:root{--bg:#090d14;--panel:rgba(10,14,22,.80);--panel2:rgba(19,25,36,.86);--line:rgba(255,255,255,.14);--text:#f6f0df;--muted:#aeb7c6;--gold:#d7b66d;--green:#6fc3a1}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif}
+body{overscroll-behavior:none}
+#app,#stage{position:fixed;inset:0}
+#stage{touch-action:none;background:linear-gradient(#0b1322,#06090f)}
+canvas{display:block;width:100%;height:100%;touch-action:none}
+#fogFx{position:absolute;inset:-12%;pointer-events:none;z-index:2;opacity:.23;background:radial-gradient(ellipse at 20% 55%,rgba(220,230,255,.34),transparent 32%),radial-gradient(ellipse at 70% 42%,rgba(210,225,255,.22),transparent 30%),radial-gradient(ellipse at 50% 78%,rgba(255,255,255,.17),transparent 26%);filter:blur(24px);animation:drift 18s ease-in-out infinite alternate}
+@keyframes drift{from{transform:translate3d(-2%,1%,0) scale(1)}to{transform:translate3d(3%,-1%,0) scale(1.08)}}
+.ui{position:absolute;z-index:5}
+#header{left:max(12px,env(safe-area-inset-left));right:max(12px,env(safe-area-inset-right));top:max(10px,env(safe-area-inset-top));display:flex;gap:10px;justify-content:space-between;align-items:flex-start;pointer-events:none}
+.card{background:var(--panel);border:1px solid var(--line);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-radius:14px;box-shadow:0 12px 36px rgba(0,0,0,.25)}
+#titleCard{padding:10px 12px;max-width:min(68vw,440px)}
+#title{font-weight:800;letter-spacing:.02em;font-size:15px}.sub{font-size:11px;color:var(--muted);margin-top:3px;line-height:1.35}
+#statusCard{padding:8px 10px;font-size:11px;color:var(--muted);text-align:right;max-width:34vw}
+#controls{right:max(10px,env(safe-area-inset-right));top:92px;display:flex;flex-direction:column;gap:7px}
+.iconBtn{width:44px;height:44px;border-radius:12px;border:1px solid var(--line);background:var(--panel2);color:var(--text);font-size:17px;font-weight:700;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+.iconBtn.active{border-color:#977f47;background:#3a301b;color:#ffe8ae}
+#sceneInfo{left:max(10px,env(safe-area-inset-left));bottom:116px;width:min(360px,calc(100vw - 88px));padding:12px 13px}
+#sceneName{font-size:17px;font-weight:800;margin-bottom:4px}#sceneDesc{font-size:12px;color:var(--muted);line-height:1.5}
+#viewBar{display:flex;gap:7px;margin-top:10px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none}#viewBar::-webkit-scrollbar{display:none}
+.viewBtn{border:1px solid var(--line);background:rgba(255,255,255,.06);color:var(--text);border-radius:10px;padding:8px 10px;white-space:nowrap;font-size:12px;min-height:38px}
+#sceneStrip{left:max(8px,env(safe-area-inset-left));right:max(8px,env(safe-area-inset-right));bottom:max(8px,env(safe-area-inset-bottom));display:flex;gap:7px;overflow-x:auto;padding:8px;background:rgba(8,11,17,.84);border:1px solid var(--line);border-radius:14px;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);scrollbar-width:none}
+#sceneStrip::-webkit-scrollbar{display:none}
+.sceneBtn{flex:0 0 auto;border:1px solid var(--line);background:#151b27;color:var(--text);border-radius:10px;padding:9px 11px;font-size:12px;min-height:42px;white-space:nowrap}
+.sceneBtn.active{border-color:#ad9252;background:#3a301b;color:#ffe7aa}
+#hint{position:absolute;left:50%;transform:translateX(-50%);top:80px;z-index:4;padding:7px 10px;border-radius:999px;background:rgba(8,11,17,.72);border:1px solid var(--line);font-size:11px;color:var(--muted);pointer-events:none;transition:opacity .5s}
+#loading{position:fixed;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;background:#080c13;color:#c7d0de;font-size:14px}
+#loading .box{padding:18px 20px;text-align:center}.spinner{width:34px;height:34px;border:3px solid #283244;border-top-color:#d7b66d;border-radius:50%;margin:0 auto 12px;animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+#error{display:none;position:fixed;inset:18px;z-index:30;align-items:center;justify-content:center;text-align:center;background:#151a23;border:1px solid #343d4d;border-radius:16px;padding:24px}
+#badge{position:absolute;z-index:5;right:10px;bottom:116px;font-size:10px;color:#8791a2;background:rgba(8,11,17,.68);border:1px solid var(--line);border-radius:9px;padding:6px 8px}
+@media(max-width:600px){#statusCard{display:none}#sceneInfo{bottom:112px}.sub{font-size:10px}#hint{top:75px}#controls{top:88px}}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"}}</script>
+</head>
+<body>
+<div id="app">
+  <div id="stage"></div><div id="fogFx"></div>
+  <div id="loading"><div class="box"><div class="spinner"></div>正在建立霍格華茲沉浸式場景…<div class="sub">第一次載入約數秒</div></div></div>
+  <div id="error"><div><b>3D 模組載入失敗</b><br><span class="sub">請確認 Safari 有網路後重新整理。</span></div></div>
+  <div id="header" class="ui"><div id="titleCard" class="card"><div id="title">霍格華茲城堡｜沉浸式完整版</div><div class="sub">依前面六視圖與室內分區概念重建。單指旋轉・雙指縮放／平移・點金色入口進房間。</div></div><div id="statusCard" class="card">場景：<span id="statusScene">城堡全景</span><br>物件：<span id="objectCount">—</span></div></div>
+  <div id="hint">拖曳環視　｜　雙指捏合縮放　｜　下方可直接切換室內</div>
+  <div id="controls" class="ui">
+    <button class="iconBtn" id="zoomIn" aria-label="放大">＋</button>
+    <button class="iconBtn" id="zoomOut" aria-label="縮小">−</button>
+    <button class="iconBtn" id="angle" aria-label="換角度">↻</button>
+    <button class="iconBtn" id="auto" aria-label="自動旋轉">◎</button>
+    <button class="iconBtn active" id="night" aria-label="夜景">☾</button>
+    <button class="iconBtn active" id="fog" aria-label="霧氣">≋</button>
+    <button class="iconBtn" id="reset" aria-label="重設">⌂</button>
+  </div>
+  <div id="sceneInfo" class="ui card"><div id="sceneName">城堡全景</div><div id="sceneDesc">黑湖、懸崖、主塔群、大廳、溫室、石橋、魁地奇球場與禁忌森林。金色光點代表可進入的室內。</div><div id="viewBar"></div></div>
+  <div id="badge">Fan-made procedural 3D concept · 非官方建築模型</div>
+  <div id="sceneStrip" class="ui"></div>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+
+const stage=document.getElementById('stage'),loading=document.getElementById('loading'),errorBox=document.getElementById('error');
+const sceneStrip=document.getElementById('sceneStrip'),viewBar=document.getElementById('viewBar'),sceneName=document.getElementById('sceneName'),sceneDesc=document.getElementById('sceneDesc'),statusScene=document.getElementById('statusScene'),objectCount=document.getElementById('objectCount'),fogFx=document.getElementById('fogFx');
+try{
+const renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});renderer.setPixelRatio(Math.min(devicePixelRatio||1,1.8));renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;stage.appendChild(renderer.domElement);
+const world=new THREE.Scene();world.background=new THREE.Color(0x08101d);world.fog=new THREE.FogExp2(0x0a1020,.012);
+const camera=new THREE.PerspectiveCamera(48,1,.08,250);camera.position.set(28,20,34);
+const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.dampingFactor=.065;controls.screenSpacePanning=true;controls.minDistance=1.2;controls.maxDistance=85;controls.target.set(0,7,0);
+const hemi=new THREE.HemisphereLight(0x95b9ff,0x111018,1.15);world.add(hemi);const moon=new THREE.DirectionalLight(0xc8dcff,2.1);moon.position.set(-30,42,-18);moon.castShadow=true;moon.shadow.mapSize.set(1024,1024);world.add(moon);const warm=new THREE.DirectionalLight(0xffd38a,.7);warm.position.set(20,16,30);world.add(warm);
+
+const M={stone:new THREE.MeshStandardMaterial({color:0x535963,roughness:.92,metalness:.03}),stone2:new THREE.MeshStandardMaterial({color:0x343942,roughness:.95}),roof:new THREE.MeshStandardMaterial({color:0x18202c,roughness:.78,metalness:.12}),wood:new THREE.MeshStandardMaterial({color:0x4e311d,roughness:.78}),gold:new THREE.MeshStandardMaterial({color:0xc19a52,roughness:.36,metalness:.68,emissive:0x332205,emissiveIntensity:.3}),window:new THREE.MeshStandardMaterial({color:0xffd46a,emissive:0xffa729,emissiveIntensity:2.6,roughness:.25}),glass:new THREE.MeshPhysicalMaterial({color:0xa7d2c4,transparent:true,opacity:.32,roughness:.13,metalness:.06,side:THREE.DoubleSide}),water:new THREE.MeshStandardMaterial({color:0x102b47,roughness:.18,metalness:.22,transparent:true,opacity:.88}),green:new THREE.MeshStandardMaterial({color:0x27483a,roughness:.9}),green2:new THREE.MeshStandardMaterial({color:0x152e27,roughness:.9}),red:new THREE.MeshStandardMaterial({color:0x6b1f27,roughness:.7}),blue:new THREE.MeshStandardMaterial({color:0x203b63,roughness:.65}),black:new THREE.MeshStandardMaterial({color:0x0b0c0e,roughness:.95}),white:new THREE.MeshStandardMaterial({color:0xd7d2c6,roughness:.82}),purple:new THREE.MeshStandardMaterial({color:0x4b3058,roughness:.78}),serpent:new THREE.MeshStandardMaterial({color:0x244b3a,roughness:.7,metalness:.25})};
+const scenes={},animated=[],hotspots=[],flickers=[];let activeKey='castle',angleIndex=0,isNight=true,fogOn=true;
+const geo={box:(x,y,z)=>new THREE.BoxGeometry(x,y,z),cyl:(r,h,s=16)=>new THREE.CylinderGeometry(r,r,h,s),cone:(r,h,s=16)=>new THREE.ConeGeometry(r,h,s),sphere:(r,s=16)=>new THREE.SphereGeometry(r,s,Math.max(8,s/2)),torus:(r,t=.06)=>new THREE.TorusGeometry(r,t,8,28)};
+function mesh(g,m,p=[0,0,0],r=[0,0,0],parent){const o=new THREE.Mesh(g,m);o.position.set(...p);o.rotation.set(...r);o.castShadow=true;o.receiveShadow=true;(parent||world).add(o);return o}
+function group(name){const g=new THREE.Group();g.name=name;world.add(g);return g}
+function candle(parent,x,y,z,s=1,light=false){const stem=mesh(geo.cyl(.025*s,.28*s,8),M.white,[x,y,z],[],parent);const flame=mesh(geo.sphere(.055*s,8),M.window,[x,y+.18*s,z],[],parent);if(light&&flickers.length<28){const l=new THREE.PointLight(0xffb44a,.65*s,5*s,2);l.position.set(x,y+.2*s,z);parent.add(l);flickers.push(l)}return stem}
+function windowGrid(parent,center,size,cols,rows,axis='z'){for(let i=0;i<cols;i++)for(let j=0;j<rows;j++){const u=(i-(cols-1)/2)*size[0],v=(j-(rows-1)/2)*size[1];if(axis==='z')mesh(geo.box(.28,.46,.05),M.window,[center[0]+u,center[1]+v,center[2]],[],parent);else mesh(geo.box(.05,.46,.28),M.window,[center[0],center[1]+v,center[2]+u],[],parent)}}
+function tower(parent,x,z,r=1.5,h=10,roofH=4){mesh(geo.cyl(r,h,18),M.stone,[x,h/2,z],[],parent);mesh(geo.cone(r*1.23,roofH,18),M.roof,[x,h+roofH/2-.1,z],[],parent);for(let a=0;a<8;a++){const ang=a*Math.PI/4;for(let y=2;y<h-1;y+=2.1){const w=mesh(geo.box(.22,.42,.08),M.window,[x+Math.sin(ang)*(r+.015),y,z+Math.cos(ang)*(r+.015)],[0,ang,0],parent);}}return {x,z,h}}
+function roofBlock(parent,x,y,z,w,d,h){mesh(geo.cone(Math.max(w,d)*.7,h,4),M.roof,[x,y+h/2,z],[0,Math.PI/4,0],parent)}
+function addHotspot(parent,x,y,z,key){const h=mesh(geo.sphere(.26,14),M.gold,[x,y,z],[],parent);h.userData.key=key;hotspots.push(h);const ring=mesh(geo.torus(.48,.035),M.gold,[x,y,z],[Math.PI/2,0,0],parent);animated.push({o:ring,type:'ring',speed:.35+Math.random()*.25});}
+function stars(parent,n=450,r=80){const pts=[];for(let i=0;i<n;i++){const a=Math.random()*Math.PI*2,b=Math.acos(2*Math.random()-1),rr=r*(.82+Math.random()*.18);pts.push(new THREE.Vector3(rr*Math.sin(b)*Math.cos(a),Math.abs(rr*Math.cos(b))*.8+8,rr*Math.sin(b)*Math.sin(a)))}const g=new THREE.BufferGeometry().setFromPoints(pts);parent.add(new THREE.Points(g,new THREE.PointsMaterial({color:0xdce7ff,size:.13,sizeAttenuation:true,transparent:true,opacity:.8})))}
+function sceneDef(key,title,desc,group,views){scenes[key]={title,desc,group,views};group.visible=false;return scenes[key]}
+
+// EXTERIOR
+const castle=group('castle');
+mesh(geo.cyl(15,6,24),M.stone2,[0,0,0],[],castle);mesh(new THREE.CylinderGeometry(26,32,.35,48),M.water,[0,-3.15,0],[],castle);
+for(let i=0;i<80;i++){const a=Math.random()*Math.PI*2,rr=16+Math.random()*13,x=Math.cos(a)*rr,z=Math.sin(a)*rr;const tr=new THREE.Group();tr.position.set(x,-2.7,z);castle.add(tr);mesh(geo.cyl(.13,.9,8),M.wood,[0,.45,0],[],tr);mesh(geo.cone(.55,1.8,8),Math.random()>.5?M.green:M.green2,[0,1.45,0],[],tr)}
+stars(castle,500,95);
+mesh(geo.box(11,5,5),M.stone,[0,5.5,0],[],castle);roofBlock(castle,0,8,0,11,5,4);windowGrid(castle,[0,6.2,2.53],[1.05,1.25],8,3,'z');
+mesh(geo.box(8,4.3,4),M.stone,[-7,4.8,-1.8],[],castle);roofBlock(castle,-7,6.95,-1.8,8,4,3.2);windowGrid(castle,[-7,5.4,.23],[.9,1.2],6,2,'z');
+mesh(geo.box(7,4.5,4.5),M.stone,[6.8,5.0,-2.3],[],castle);roofBlock(castle,6.8,7.25,-2.3,7,4.5,3.1);
+const tdata=[[-5,3.8,1.4,10,4],[4,4,1.55,12,4.5],[8.8,1.4,1.25,10,3.8],[-9,-4,1.25,9,3.4],[1.3,-5.8,1.15,9.5,3.6],[-2.5,-4.5,1.05,8,3.2],[10,-5.3,1,8.5,3],[-11,1.5,1,7.5,2.7],[0,4.8,.9,7.8,2.8]];tdata.forEach(t=>tower(castle,...t));
+// viaduct
+for(let i=0;i<8;i++){const x=-10+i*2.2;mesh(geo.box(.55,5.3,.85),M.stone,[x,1.5,7],[],castle);mesh(geo.box(2.2,.48,1.05),M.stone,[x+1.1,4.15,7],[],castle)}
+// greenhouse
+for(let i=0;i<4;i++){const x=8+i*1.5;mesh(new THREE.CylinderGeometry(1,1,1.35,18,1,true,0,Math.PI),M.glass,[x,1.4,6.3],[0,0,Math.PI/2],castle)}
+// bridge
+for(let i=0;i<9;i++)mesh(geo.box(1.5,.32,1),M.stone,[-15+i*1.7,-.2,-5.5+i*.28],[0,-.16,0],castle);
+// quidditch
+for(let s of [-1,1])for(let j=0;j<3;j++){const z=13+(j-1)*2;mesh(geo.cyl(.06,3.6,8),M.gold,[18*s,-.8,z],[],castle);mesh(geo.torus(.46,.05),M.gold,[18*s,1,z],[0,Math.PI/2,0],castle)}
+mesh(geo.box(9,.22,5.5),M.green,[18,-2.7,13],[],castle);
+// lamps and stair approach
+for(let i=0;i<12;i++){const x=-4+i*.75;mesh(geo.box(.62,.18,2.2),M.stone,[x,-1.7+i*.18,-8.3+i*.35],[],castle);candle(castle,x,-1.42+i*.18,-7.55+i*.35,.7,i%3===0)}
+addHotspot(castle,-2.2,2.0,3.2,'hall');addHotspot(castle,4.1,3.2,-.5,'stairs');addHotspot(castle,-7,2.7,.45,'library');addHotspot(castle,7.6,2.2,-.2,'potions');addHotspot(castle,9.2,2.2,3.7,'dada');addHotspot(castle,10.1,3.4,-6.0,'divination');addHotspot(castle,10.3,1.7,6.2,'greenhouse');addHotspot(castle,4,13.8,4,'astronomy');addHotspot(castle,-4.8,2.4,-3,'headmaster');
+sceneDef('castle','城堡全景','黑湖、懸崖、主塔群、大廳、溫室、石橋、魁地奇球場與禁忌森林。金色光點代表可進入的室內。',castle,[{n:'湖面正面',p:[30,18,36],t:[0,6,0]},{n:'高地背面',p:[-31,22,-31],t:[0,6,0]},{n:'左側',p:[-38,15,12],t:[0,5,0]},{n:'右側',p:[38,14,-8],t:[0,5,0]},{n:'俯視',p:[.1,52,.1],t:[0,3,0]}]);
+
+// GREAT HALL
+const hall=group('hall');mesh(geo.box(14,.35,24),M.stone2,[0,-.2,0],[],hall);mesh(geo.box(.4,10,24),M.stone,[-7,4.7,0],[],hall);mesh(geo.box(.4,10,24),M.stone,[7,4.7,0],[],hall);mesh(geo.box(14,10,.4),M.stone,[0,4.7,-12],[],hall);mesh(geo.box(14,10,.4),M.stone,[0,4.7,12],[],hall);
+for(let z=-8;z<=8;z+=5){mesh(geo.box(1.35,.18,16),M.wood,[z/4,.8,0],[0,Math.PI/2,0],hall);for(let x=-5.4;x<=5.4;x+=1.2){mesh(geo.box(.7,.35,.18),M.wood,[x,.48,z],[0,0,0],hall)}}
+for(let x=-5.2;x<=5.2;x+=2.6)for(let z=-9;z<=9;z+=3)candle(hall,x,5+Math.random()*2,z,.7,Math.random()>.75);
+for(let z=-8;z<=8;z+=4){for(let y=2.2;y<=7;y+=2.2){mesh(geo.box(.08,1.1,1.6),M.window,[-6.78,y,z],[0,0,0],hall);mesh(geo.box(.08,1.1,1.6),M.window,[6.78,y,z],[0,0,0],hall)}}
+mesh(geo.box(8,.4,2.6),M.wood,[0,.7,-10.1],[],hall);for(let i=-2;i<=2;i++)mesh(geo.box(1.15,1.8,.2),[M.red,M.blue,M.gold,M.green,M.red][i+2],[i*1.35,5,-11.7],[],hall);stars(hall,280,34);
+sceneDef('hall','大廳','長桌、學院旗幟、漂浮燭火、高聳窗列與星空感天花。可切換入口、中央與教授席角度。',hall,[{n:'入口',p:[0,3,11],t:[0,3,-2]},{n:'中央長桌',p:[4,2.5,3],t:[0,2,-4]},{n:'教授席',p:[0,2.2,-9],t:[0,3,0]},{n:'高處',p:[10,8,8],t:[0,2,0]}]);
+
+// MOVING STAIRCASES
+const stairs=group('stairs');mesh(geo.box(15,.4,15),M.stone2,[0,-.2,0],[],stairs);for(let y=2;y<17;y+=4){for(let s of [-1,1])mesh(geo.box(.35,3.5,15),M.stone,[7.2*s,y,0],[],stairs)}
+for(let level=0;level<5;level++){for(let k=0;k<3;k++){const sg=new THREE.Group();sg.position.set((k-1)*3.8,1+level*3.2,(level%2?1:-1)*(k-1)*1.2);stairs.add(sg);for(let i=0;i<10;i++)mesh(geo.box(2.7,.18,.55),M.stone,[0,i*.22,i*.5-2.25],[0,0,0],sg);animated.push({o:sg,type:'stairs',base:sg.rotation.y,phase:Math.random()*6,speed:.25+Math.random()*.2})}}
+for(let y=1.5;y<16;y+=2.2)for(let x of [-6.7,6.7]){for(let z=-5;z<=5;z+=2.5)mesh(geo.box(.06,.8,1.2),M.gold,[x,y,z],[],stairs)}
+sceneDef('stairs','會移動的樓梯','多層挑高中庭、錯位平台、會緩慢轉向的樓梯與密集肖像牆。',stairs,[{n:'底層仰望',p:[10,2,12],t:[0,7,0]},{n:'中層平台',p:[5,8,8],t:[0,8,0]},{n:'高層俯看',p:[10,16,6],t:[0,7,0]},{n:'樓梯之間',p:[1.5,6,2],t:[0,6,-4]}]);
+
+// LIBRARY
+const library=group('library');mesh(geo.box(18,.35,18),M.wood,[0,-.2,0],[],library);for(let x of [-8.5,8.5])mesh(geo.box(.4,8,18),M.stone,[x,3.8,0],[],library);for(let z=-7.5;z<=7.5;z+=3){for(let x of [-7.8,7.8]){mesh(geo.box(.6,6.4,2.4),M.wood,[x,3.1,z],[],library);for(let y=.6;y<6;y+=.55)for(let q=0;q<5;q++){const mats=[M.red,M.blue,M.green,M.purple,M.gold];mesh(geo.box(.16,.42,.34),mats[(q+Math.floor(y*10))%mats.length],[x+(x<0?.36:-.36),y,z- .8+q*.4],[],library)}}}
+for(let z=-5;z<=5;z+=5){mesh(geo.box(7,.18,1.3),M.wood,[0,.75,z],[],library);for(let x=-2.6;x<=2.6;x+=1.3)candle(library,x,1.1,z,.6,x===0)}
+for(let i=0;i<8;i++){const a=i/8*Math.PI*2;mesh(geo.box(.06,2.2,1.2),M.window,[Math.cos(a)*8.25,5.5,Math.sin(a)*8.25],[0,a,0],library)}
+sceneDef('library','圖書館','高牆書架、禁書區感的狹長走道、長桌、燭台與彩窗。',library,[{n:'中央走道',p:[0,2,8],t:[0,2,-5]},{n:'書架近看',p:[6.5,2,5],t:[7.8,2,0]},{n:'閱讀桌',p:[3,1.8,-1],t:[0,1,-3]},{n:'高處俯看',p:[9,7,9],t:[0,2,0]}]);
+
+// POTIONS
+const potions=group('potions');mesh(geo.box(18,.35,14),M.stone2,[0,-.2,0],[],potions);for(let x of [-8.7,8.7])mesh(geo.box(.35,6,14),M.stone,[x,2.8,0],[],potions);mesh(geo.box(18,6,.35),M.stone,[0,2.8,-6.8],[],potions);
+for(let z=-4;z<=4;z+=4)for(let x=-5;x<=5;x+=2.5){mesh(geo.cyl(.48,.65,14),M.black,[x,.32,z],[],potions);mesh(geo.torus(.53,.05),M.gold,[x,.65,z],[Math.PI/2,0,0],potions)}
+for(let side of [-1,1])for(let z=-5;z<=5;z+=2){for(let y=1;y<=4.5;y+=.65){const mat=[M.green,M.blue,M.red,M.gold][Math.floor((z+y)*3)%4+4%4];mesh(geo.sphere(.11,8),mat,[8.45*side,y,z],[],potions)}}
+const greenLight=new THREE.PointLight(0x54ffbb,2.4,14,2);greenLight.position.set(0,2,-2);potions.add(greenLight);
+sceneDef('potions','魔藥學教室','地下石室、坩堝陣列、瓶罐牆與帶綠光的操作區。',potions,[{n:'教室入口',p:[0,2,9],t:[0,1.5,-2]},{n:'坩堝桌',p:[5,2,3],t:[0,.8,0]},{n:'藥瓶牆',p:[3,2,0],t:[8,2,0]},{n:'低角度',p:[0,.9,5],t:[0,1,-4]}]);
+
+// DADA
+const dada=group('dada');mesh(geo.box(18,.35,15),M.stone2,[0,-.2,0],[],dada);for(let i=-3;i<=3;i++)for(let z=-4;z<=4;z+=2.3){mesh(geo.box(1.5,.18,.75),M.wood,[i*2,.75,z],[],dada);mesh(geo.box(.65,.8,.18),M.wood,[i*2,.35,z+.7],[],dada)}
+mesh(geo.box(18,7,.4),M.stone,[0,3.3,-7.2],[],dada);for(let x=-6;x<=6;x+=3)mesh(geo.box(1.4,2.6,.08),M.window,[x,4.2,-6.96],[],dada);const orb=mesh(geo.sphere(1.1,28),new THREE.MeshStandardMaterial({color:0x2a72ae,emissive:0x184f89,emissiveIntensity:2,transparent:true,opacity:.72}),[0,2,-3],[],dada);animated.push({o:orb,type:'orb'});const blueLight=new THREE.PointLight(0x4aa8ff,2,16,2);blueLight.position.set(0,3,-3);dada.add(blueLight);
+sceneDef('dada','黑魔法防禦術教室','階梯座位、長窗、講台與持續脈動的藍色魔法球。',dada,[{n:'學生視角',p:[0,1.7,6],t:[0,2,-4]},{n:'講台',p:[0,2,-5.5],t:[0,2,2]},{n:'側邊',p:[7,3,3],t:[0,2,-3]},{n:'高處',p:[8,7,8],t:[0,1,0]}]);
+
+// DIVINATION
+const divination=group('divination');mesh(geo.cyl(8,.35,28),M.wood,[0,-.2,0],[],divination);for(let i=0;i<14;i++){const a=i/14*Math.PI*2;mesh(geo.box(.45,7,1.4),i%2?M.purple:M.red,[Math.sin(a)*7.5,3.3,Math.cos(a)*7.5],[0,a,0],divination)}for(let i=0;i<9;i++){const a=i/9*Math.PI*2;mesh(geo.cyl(.7,.9,12),M.wood,[Math.sin(a)*4,.45,Math.cos(a)*4],[],divination);const crystal=mesh(geo.sphere(.32,18),new THREE.MeshStandardMaterial({color:0xa5cfff,emissive:0x5d7dff,emissiveIntensity:1.7,transparent:true,opacity:.8}),[Math.sin(a)*4,1.05,Math.cos(a)*4],[],divination);animated.push({o:crystal,type:'float',baseY:1.05,phase:a})}
+sceneDef('divination','占卜學教室','圓形塔室、厚重帷幕、低矮桌面與發光水晶球。',divination,[{n:'入口',p:[0,2,7],t:[0,1,0]},{n:'水晶球桌',p:[4,1.6,3],t:[0,1,0]},{n:'中央',p:[0,1.4,1.4],t:[0,1,-5]},{n:'俯視',p:[0,10,.1],t:[0,0,0]}]);
+
+// GREENHOUSE
+const greenhouse=group('greenhouse');mesh(geo.box(18,.25,9),M.stone2,[0,-.25,0],[],greenhouse);for(let x=-8;x<=8;x+=2){const arch=new THREE.Mesh(new THREE.TorusGeometry(4,.06,8,32,Math.PI),M.glass);arch.position.set(x,0,0);arch.rotation.set(0,Math.PI/2,Math.PI/2);greenhouse.add(arch)}for(let z of [-3,0,3]){mesh(geo.box(16,.8,1.4),M.wood,[0,.3,z],[],greenhouse);for(let x=-7;x<=7;x+=1){mesh(geo.sphere(.27+Math.random()*.18,10),Math.random()>.5?M.green:M.green2,[x,.95,z],[],greenhouse)}}const sun=new THREE.PointLight(0xffe8a6,1.6,24,2);sun.position.set(0,6,0);greenhouse.add(sun);
+sceneDef('greenhouse','草藥學溫室','玻璃拱頂、三列種植台與高密度植物模型。',greenhouse,[{n:'中央走道',p:[0,1.8,7],t:[0,1,0]},{n:'植物近看',p:[6,1.2,3],t:[2,1,3]},{n:'拱頂',p:[9,5,7],t:[0,1,0]},{n:'俯視',p:[0,10,.1],t:[0,0,0]}]);
+
+// ASTRONOMY
+const astronomy=group('astronomy');mesh(geo.cyl(7,.55,30),M.stone,[0,0,0],[],astronomy);for(let i=0;i<16;i++){const a=i/16*Math.PI*2;mesh(geo.box(.45,1.4,.9),M.stone,[Math.sin(a)*6.8,.7,Math.cos(a)*6.8],[0,a,0],astronomy)}const scope=new THREE.Group();scope.rotation.z=-.28;astronomy.add(scope);mesh(geo.cyl(.55,5.2,18),M.gold,[0,3.2,0],[Math.PI/2,0,0],scope);mesh(geo.cyl(.85,.8,18),M.gold,[0,5.6,0],[Math.PI/2,0,0],scope);mesh(geo.cyl(.08,3,8),M.gold,[0,1.4,0],[],astronomy);stars(astronomy,700,70);
+sceneDef('astronomy','天文塔','開放式高塔平台、環形石欄與大型黃銅望遠鏡。',astronomy,[{n:'平台入口',p:[0,2,11],t:[0,2,0]},{n:'望遠鏡旁',p:[4,2,3],t:[0,3,0]},{n:'欄杆外側',p:[9,3,4],t:[0,2,0]},{n:'仰望星空',p:[0,2,2],t:[0,18,-8]}]);
+
+// HEADMASTER
+const headmaster=group('headmaster');mesh(geo.cyl(7,.35,28),M.wood,[0,-.2,0],[],headmaster);for(let i=0;i<16;i++){const a=i/16*Math.PI*2;mesh(geo.box(.75,5,1.5),M.wood,[Math.sin(a)*6.3,2.4,Math.cos(a)*6.3],[0,a,0],headmaster);for(let y=.5;y<4.5;y+=.55)mesh(geo.box(.18,.38,.4),[M.red,M.blue,M.green,M.gold][(i+Math.floor(y*3))%4],[Math.sin(a)*5.9,y,Math.cos(a)*5.9],[0,a,0],headmaster)}mesh(geo.box(3,.2,1.6),M.wood,[0,.9,-2.2],[],headmaster);for(let i=0;i<7;i++){const a=i/7*Math.PI*1.6;mesh(geo.box(1.1,.18,.8),M.stone,[Math.sin(a)*3.3,1+i*.4,Math.cos(a)*3.3],[0,-a,0],headmaster)}const warmOffice=new THREE.PointLight(0xffb45f,2.0,20,2);warmOffice.position.set(0,5,0);headmaster.add(warmOffice);
+sceneDef('headmaster','校長辦公室','環形書牆、旋轉感階梯、長桌與暖色照明。',headmaster,[{n:'入口',p:[0,2,9],t:[0,2,0]},{n:'辦公桌',p:[4,2,-1],t:[0,1,-2]},{n:'書牆',p:[1,2,1],t:[-6,2,0]},{n:'高處',p:[9,8,8],t:[0,2,0]}]);
+
+// FORBIDDEN FOREST
+const forest=group('forest');mesh(new THREE.CircleGeometry(22,48),M.green2,[0,-.05,0],[-Math.PI/2,0,0],forest);for(let i=0;i<170;i++){const a=Math.random()*Math.PI*2,rr=Math.sqrt(Math.random())*20,x=Math.cos(a)*rr,z=Math.sin(a)*rr;mesh(geo.cyl(.1+Math.random()*.12,1+Math.random()*1.2,8),M.wood,[x,.6,z],[],forest);mesh(geo.cone(.5+Math.random()*.7,2+Math.random()*2.2,8),i%3?M.green2:M.green,[x,2,z],[],forest)}const mistLight=new THREE.PointLight(0x8fc8c4,1.1,20,2);mistLight.position.set(0,3,0);forest.add(mistLight);
+sceneDef('forest','禁忌森林','密集樹海、低霧與冷色月光。',forest,[{n:'林緣',p:[0,2,18],t:[0,2,0]},{n:'林中小徑',p:[3,1.7,7],t:[0,2,-6]},{n:'深處',p:[-8,2,-5],t:[3,2,3]},{n:'樹冠',p:[15,12,12],t:[0,0,0]}]);
+
+// CHAMBER-LIKE SECRET ENTRANCE
+const chamber=group('chamber');mesh(geo.box(14,.35,20),M.stone2,[0,-.2,0],[],chamber);mesh(geo.box(.4,7,20),M.stone,[-7,3.3,0],[],chamber);mesh(geo.box(.4,7,20),M.stone,[7,3.3,0],[],chamber);mesh(geo.box(14,7,.4),M.stone,[0,3.3,-10],[],chamber);for(let i=0;i<8;i++){const a=i/8*Math.PI*2;mesh(geo.torus(2.2+i*.03,.08),M.serpent,[0,3,-9.7],[0,0,a],chamber)}for(let i=-2;i<=2;i++){const snake=mesh(new THREE.TorusKnotGeometry(.45,.08,48,6,2,3),M.serpent,[i*1.5,.75,-2],[],chamber);snake.scale.set(1,.5,1)}const gl=new THREE.PointLight(0x3cff9c,2.3,18,2);gl.position.set(0,2,-5);chamber.add(gl);
+sceneDef('chamber','密室入口（概念區）','蛇形石雕、地下通道與綠色反射光；作為沉浸式探索節點。',chamber,[{n:'長廊',p:[0,1.8,8],t:[0,2,-7]},{n:'石門',p:[0,2,-5],t:[0,3,-10]},{n:'蛇形雕刻',p:[4,1.4,1],t:[0,.8,-2]},{n:'低角度',p:[0,.8,5],t:[0,2,-8]}]);
+
+const order=['castle','hall','stairs','library','potions','dada','divination','greenhouse','astronomy','headmaster','chamber','forest'];
+const labels={castle:'城堡',hall:'大廳',stairs:'移動樓梯',library:'圖書館',potions:'魔藥',dada:'黑魔法防禦術',divination:'占卜',greenhouse:'溫室',astronomy:'天文塔',headmaster:'校長室',chamber:'密室入口',forest:'禁忌森林'};
+order.forEach(k=>{const b=document.createElement('button');b.className='sceneBtn';b.textContent=labels[k];b.dataset.key=k;b.addEventListener('click',()=>switchScene(k));sceneStrip.appendChild(b)});
+function countObjects(g){let n=0;g.traverse(()=>n++);return n}
+function populateViews(){viewBar.innerHTML='';scenes[activeKey].views.forEach((v,i)=>{const b=document.createElement('button');b.className='viewBtn';b.textContent=v.n;b.addEventListener('click',()=>goView(i));viewBar.appendChild(b)})}
+function goView(i){const s=scenes[activeKey],v=s.views[i%s.views.length];angleIndex=i%s.views.length;camera.position.set(...v.p);controls.target.set(...v.t);controls.update()}
+function switchScene(key){if(!scenes[key])return;Object.values(scenes).forEach(s=>s.group.visible=false);activeKey=key;angleIndex=0;const s=scenes[key];s.group.visible=true;sceneName.textContent=s.title;sceneDesc.textContent=s.desc;statusScene.textContent=s.title;objectCount.textContent=countObjects(s.group).toLocaleString();document.querySelectorAll('.sceneBtn').forEach(b=>b.classList.toggle('active',b.dataset.key===key));populateViews();controls.autoRotate=false;document.getElementById('auto').classList.remove('active');goView(0);controls.minDistance=key==='castle'?5:1.1;controls.maxDistance=key==='castle'?85:32;document.getElementById('hint').style.opacity='0';setTimeout(()=>document.getElementById('hint').style.opacity='1',1300)}
+
+// Raycast hotspots on castle
+const ray=new THREE.Raycaster(),mouse=new THREE.Vector2();let down={x:0,y:0};renderer.domElement.addEventListener('pointerdown',e=>{down={x:e.clientX,y:e.clientY}});renderer.domElement.addEventListener('pointerup',e=>{if(activeKey!=='castle'||Math.hypot(e.clientX-down.x,e.clientY-down.y)>8)return;const r=renderer.domElement.getBoundingClientRect();mouse.x=(e.clientX-r.left)/r.width*2-1;mouse.y=-(e.clientY-r.top)/r.height*2+1;ray.setFromCamera(mouse,camera);const hit=ray.intersectObjects(hotspots,false)[0];if(hit)switchScene(hit.object.userData.key)});
+
+document.getElementById('zoomIn').addEventListener('click',()=>{const d=camera.position.clone().sub(controls.target).multiplyScalar(.82);camera.position.copy(controls.target).add(d);controls.update()});document.getElementById('zoomOut').addEventListener('click',()=>{const d=camera.position.clone().sub(controls.target).multiplyScalar(1.22);camera.position.copy(controls.target).add(d);controls.update()});document.getElementById('angle').addEventListener('click',()=>goView((angleIndex+1)%scenes[activeKey].views.length));document.getElementById('reset').addEventListener('click',()=>goView(0));
+const auto=document.getElementById('auto');auto.addEventListener('click',()=>{controls.autoRotate=!controls.autoRotate;controls.autoRotateSpeed=.55;auto.classList.toggle('active',controls.autoRotate)});
+const nightBtn=document.getElementById('night');nightBtn.addEventListener('click',()=>{isNight=!isNight;nightBtn.classList.toggle('active',isNight);world.background.setHex(isNight?0x08101d:0x718aa6);hemi.intensity=isNight?1.15:2.6;moon.intensity=isNight?2.1:1.1;warm.intensity=isNight?.7:1.4;M.window.emissiveIntensity=isNight?2.6:.9});
+const fogBtn=document.getElementById('fog');fogBtn.addEventListener('click',()=>{fogOn=!fogOn;fogBtn.classList.toggle('active',fogOn);world.fog=fogOn?new THREE.FogExp2(isNight?0x0a1020:0x91a4b7,.012):null;fogFx.style.display=fogOn?'block':'none'});
+function resize(){const w=stage.clientWidth,h=stage.clientHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix()}window.addEventListener('resize',resize,{passive:true});resize();
+switchScene('castle');loading.style.display='none';
+const clock=new THREE.Clock();function loop(){const t=clock.getElapsedTime();for(const a of animated){if(a.type==='ring'){a.o.rotation.z=t*a.speed;a.o.scale.setScalar(1+.08*Math.sin(t*2))}else if(a.type==='stairs'){a.o.rotation.y=a.base+.14*Math.sin(t*a.speed+a.phase)}else if(a.type==='orb'){a.o.scale.setScalar(1+.06*Math.sin(t*2.2));a.o.rotation.y=t*.3}else if(a.type==='float'){a.o.position.y=a.baseY+.08*Math.sin(t*1.7+a.phase)}}for(let i=0;i<flickers.length;i++)flickers[i].intensity=.45+.25*Math.sin(t*7+i*1.7)+Math.random()*.08;controls.update();renderer.render(world,camera);requestAnimationFrame(loop)}loop();
+}catch(err){console.error(err);loading.style.display='none';errorBox.style.display='flex'}
+</script>
+</body></html>
