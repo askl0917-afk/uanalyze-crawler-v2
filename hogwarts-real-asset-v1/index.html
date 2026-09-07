@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Hogwarts 3D — Real Asset Viewer</title>
+<style>
+:root{--bg:#070b12;--panel:rgba(8,12,19,.82);--line:rgba(255,255,255,.14);--text:#f4efe3;--muted:#aeb8c7;--gold:#d9b866}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:var(--bg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif;color:var(--text)}
+#viewer{position:fixed;inset:0;background:#05080e}iframe{display:block;width:100%;height:100%;border:0;background:#05080e}
+#top{position:fixed;z-index:10;left:max(10px,env(safe-area-inset-left));right:max(10px,env(safe-area-inset-right));top:max(10px,env(safe-area-inset-top));display:flex;justify-content:space-between;align-items:flex-start;gap:8px;pointer-events:none}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);box-shadow:0 12px 34px rgba(0,0,0,.28)}
+#title{padding:10px 12px;max-width:min(74vw,520px)}#title b{font-size:15px}#title small{display:block;color:var(--muted);font-size:11px;line-height:1.4;margin-top:4px}
+#tools{pointer-events:auto;display:flex;gap:7px}.tool{width:44px;height:44px;border-radius:12px;border:1px solid var(--line);background:rgba(15,22,34,.9);color:var(--text);font-size:16px;font-weight:700}.tool.on{background:#3a301b;border-color:#aa8b49;color:#ffe3a1}
+#bottom{position:fixed;z-index:11;left:max(8px,env(safe-area-inset-left));right:max(8px,env(safe-area-inset-right));bottom:max(8px,env(safe-area-inset-bottom));padding:8px;background:rgba(7,11,18,.82);border:1px solid var(--line);border-radius:14px;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);display:flex;gap:7px;overflow-x:auto;scrollbar-width:none}#bottom::-webkit-scrollbar{display:none}
+.modelBtn{flex:0 0 auto;min-height:44px;border-radius:11px;border:1px solid var(--line);background:#151d2b;color:var(--text);padding:9px 11px;font-size:12px;white-space:nowrap}.modelBtn.on{background:#3a301b;border-color:#aa8b49;color:#ffe3a1}
+#credit{position:fixed;z-index:9;left:max(10px,env(safe-area-inset-left));bottom:78px;padding:8px 10px;max-width:min(460px,calc(100vw - 20px));font-size:10px;line-height:1.45;color:var(--muted)}
+#loading{position:fixed;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;text-align:center;background:#070b12;color:#c8d0dc;font-size:14px;pointer-events:none}.spin{width:34px;height:34px;border:3px solid #293344;border-top-color:#d8b866;border-radius:50%;margin:0 auto 12px;animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+.hiddenUI #title,.hiddenUI #bottom,.hiddenUI #credit{display:none}.hiddenUI #top{justify-content:flex-end}.hiddenUI #tools{pointer-events:auto}
+@media(max-width:600px){#title{max-width:72vw}#credit{font-size:9px}}
+</style>
+</head>
+<body>
+<div id="viewer"><iframe id="frame" title="Hogwarts 3D model viewer" allow="autoplay; fullscreen; xr-spatial-tracking" allowfullscreen></iframe></div>
+<div id="loading"><div><div class="spin"></div>正在載入真正的 3D 資產…<br><span style="font-size:11px;color:#8d9aac">這版不再使用 Box / Cylinder / Cone 拼城堡。</span></div></div>
+<div id="top"><div id="title" class="panel"><b>霍格華茲｜Real 3D Asset Viewer</b><small>根本改法：直接載入既有高密度 3D Mesh 與材質。現在 Three.js 不再負責「造城堡」，只讓專業 3D Viewer 負責顯示與互動。</small></div><div id="tools"><button id="reload" class="tool" aria-label="重新載入">↻</button><button id="hide" class="tool" aria-label="隱藏介面">☰</button></div></div>
+<div id="credit" class="panel">目前模型：<span id="creditText"></span></div>
+<div id="bottom"></div>
+<script>
+(()=>{
+const models=[
+ {name:'實景掃描',uid:'69e528e70a204de187ea6f89a5a65610',credit:'Hogwarts Photoscan — Darrel_Leigh · CC Attribution · 約 519.8k triangles',mode:'photoscan'},
+ {name:'高精度重建',uid:'70dcec840f8444dda2974aa6a9b049e2',credit:'Hogwarts 3D — Ju Designer · CC Attribution · 約 969.8k triangles',mode:'detail'},
+ {name:'完整城堡',uid:'41647c3521d94ebc968a72e547af0e6b',credit:'Hogwarts castle — jvasishta2013 · CC Attribution · 約 581.8k triangles',mode:'castle'}
+];
+const frame=document.getElementById('frame'),bottom=document.getElementById('bottom'),creditText=document.getElementById('creditText'),loading=document.getElementById('loading');let current=0,hidden=false;
+function url(uid){return `https://sketchfab.com/models/${uid}/embed?autostart=1&ui_theme=dark&ui_infos=0&ui_controls=1&ui_help=0&ui_inspector=0&ui_settings=1&ui_fullscreen=1&ui_annotations=1&ui_watermark=0&ui_watermark_link=0`}
+function load(i){current=i;loading.style.display='flex';frame.src=url(models[i].uid);creditText.textContent=models[i].credit;[...bottom.children].forEach((b,j)=>b.classList.toggle('on',j===i));setTimeout(()=>loading.style.display='none',2800)}
+models.forEach((m,i)=>{const b=document.createElement('button');b.className='modelBtn';b.textContent=m.name;b.addEventListener('click',()=>load(i));bottom.appendChild(b)});
+frame.addEventListener('load',()=>{setTimeout(()=>loading.style.display='none',600)});
+document.getElementById('reload').addEventListener('click',()=>load(current));
+document.getElementById('hide').addEventListener('click',()=>{hidden=!hidden;document.body.classList.toggle('hiddenUI',hidden)});
+load(0);
+})();
+</script>
+</body>
+</html>
