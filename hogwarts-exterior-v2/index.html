@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Hogwarts Exterior Prototype V2</title>
+<style>
+:root{--bg:#09111d;--panel:rgba(8,13,22,.76);--line:rgba(255,255,255,.14);--txt:#f4efe3;--muted:#aab6c8;--gold:#d8b66b}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:var(--bg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif;color:var(--txt)}
+#stage{position:fixed;inset:0;touch-action:none}canvas{display:block;width:100%;height:100%;touch-action:none}
+#loading{position:fixed;inset:0;z-index:20;background:#08101b;display:flex;align-items:center;justify-content:center;text-align:center;color:#c4cfde;font-size:14px}.spin{width:34px;height:34px;border:3px solid #293448;border-top-color:#e2bd6c;border-radius:50%;margin:0 auto 12px;animation:s 1s linear infinite}@keyframes s{to{transform:rotate(360deg)}}
+#top{position:fixed;z-index:5;left:max(10px,env(safe-area-inset-left));right:max(10px,env(safe-area-inset-right));top:max(10px,env(safe-area-inset-top));display:flex;justify-content:space-between;align-items:flex-start;gap:10px;pointer-events:none}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);box-shadow:0 12px 34px rgba(0,0,0,.24)}
+#title{padding:11px 13px;max-width:520px}#title b{font-size:16px;letter-spacing:.02em}#title small{display:block;margin-top:4px;color:var(--muted);font-size:11px;line-height:1.45}
+#stat{padding:8px 10px;color:var(--muted);font-size:11px;text-align:right}
+#tools{position:fixed;z-index:6;right:max(10px,env(safe-area-inset-right));top:102px;display:flex;flex-direction:column;gap:7px}.tool{width:46px;height:46px;border:1px solid var(--line);border-radius:13px;background:rgba(18,25,36,.86);color:#f5efe0;font-size:18px;font-weight:700}.tool.on{background:#3b301a;border-color:#a58749;color:#ffe7a5}
+#info{position:fixed;z-index:5;left:max(10px,env(safe-area-inset-left));bottom:86px;width:min(480px,calc(100vw - 82px));padding:12px 13px}#info strong{font-size:16px}#info p{margin:5px 0 0;color:var(--muted);font-size:11px;line-height:1.45}
+#views{position:fixed;z-index:6;left:max(8px,env(safe-area-inset-left));right:max(8px,env(safe-area-inset-right));bottom:max(8px,env(safe-area-inset-bottom));display:flex;gap:7px;overflow-x:auto;padding:8px;background:rgba(8,13,22,.82);border:1px solid var(--line);border-radius:14px;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);scrollbar-width:none}#views::-webkit-scrollbar{display:none}.view{flex:0 0 auto;min-height:44px;border-radius:11px;border:1px solid var(--line);background:#151e2c;color:#f4efe3;padding:9px 12px;font-size:12px;white-space:nowrap}.view.on{border-color:#b3914d;background:#3a301b;color:#ffe4a2}
+#hint{position:fixed;z-index:4;left:50%;transform:translateX(-50%);top:84px;padding:7px 10px;border-radius:999px;background:rgba(8,13,22,.66);border:1px solid var(--line);color:var(--muted);font-size:10px;pointer-events:none}
+#error{display:none;position:fixed;inset:20px;z-index:30;align-items:center;justify-content:center;text-align:center;background:#141a24;border:1px solid #384253;border-radius:16px;padding:24px;color:#fff}
+@media(max-width:600px){#stat{display:none}#title{max-width:78vw}#hint{top:83px}#info{bottom:84px}}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"}}</script>
+</head>
+<body>
+<div id="stage"></div>
+<div id="loading"><div><div class="spin"></div>正在建立外觀 Prototype V2…<br><span style="font-size:11px;color:#8896a9">這版只做城堡外觀，先把輪廓、材質與光線做好。</span></div></div>
+<div id="error">3D 載入失敗。請確認 Safari 有網路後重新整理。</div>
+<div id="top"><div id="title" class="panel"><b>霍格華茲城堡｜Exterior Prototype V2</b><small>不是前一版的方塊示意圖。這版改成建築模組＋程序石材／屋瓦材質＋拱窗、扶壁、城垛、橋梁與懸崖。單指旋轉，雙指縮放／平移。</small></div><div id="stat" class="panel">模式：<span id="modeTxt">夜景</span><br>場景物件：<span id="count">—</span></div></div>
+<div id="hint">拖曳環視　｜　雙指縮放　｜　先檢查五個外觀角度</div>
+<div id="tools"><button id="zin" class="tool">＋</button><button id="zout" class="tool">−</button><button id="next" class="tool">↻</button><button id="auto" class="tool">◎</button><button id="day" class="tool on">☾</button><button id="reset" class="tool">⌂</button></div>
+<div id="info" class="panel"><strong id="viewName">湖面正面</strong><p id="viewDesc">先看最重要的一關：從黑湖方向望向城堡，主塔、Great Hall、連拱、懸崖與窗光必須先像一座真正的建築，而不是幾何積木。</p></div>
+<div id="views"></div>
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+
+const stage=document.getElementById('stage'),loading=document.getElementById('loading'),errorBox=document.getElementById('error');
+try{
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x0a1424);scene.fog=new THREE.FogExp2(0x0c1625,.0052);
+const camera=new THREE.PerspectiveCamera(42,1,.1,300);camera.position.set(42,27,54);
+const renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});renderer.setPixelRatio(Math.min(devicePixelRatio||1,1.55));renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.18;renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;stage.appendChild(renderer.domElement);
+const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.dampingFactor=.065;controls.screenSpacePanning=true;controls.minDistance=14;controls.maxDistance=105;controls.target.set(0,11,0);
+
+function texStone(bump=false){const c=document.createElement('canvas');c.width=c.height=512;const x=c.getContext('2d');x.fillStyle=bump?'#777':'#62666b';x.fillRect(0,0,512,512);const H=34,W=64;for(let r=0;r<16;r++){const off=r%2?W/2:0;for(let col=-1;col<9;col++){const px=col*W+off,py=r*H;const v=48+Math.floor(Math.random()*32);x.fillStyle=bump?`rgb(${120+v/5},${120+v/5},${120+v/5})`:`rgb(${v+30},${v+31},${v+33})`;x.fillRect(px+2,py+2,W-4,H-4);x.strokeStyle=bump?'#4a4a4a':'#3d4044';x.lineWidth=2;x.strokeRect(px+1,py+1,W-2,H-2)}}for(let i=0;i<1400;i++){const v=bump?80+Math.random()*100:65+Math.random()*55;x.fillStyle=`rgba(${v},${v},${v},${bump?.12:.08})`;x.fillRect(Math.random()*512,Math.random()*512,1+Math.random()*2,1+Math.random()*2)}const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.colorSpace=bump?THREE.NoColorSpace:THREE.SRGBColorSpace;t.repeat.set(4,4);return t}
+function texRoof(){const c=document.createElement('canvas');c.width=c.height=512;const x=c.getContext('2d');x.fillStyle='#202935';x.fillRect(0,0,512,512);for(let y=0;y<512;y+=28){const off=(y/28)%2?18:0;for(let xx=-36;xx<512;xx+=36){x.fillStyle=`rgb(${25+Math.random()*12},${34+Math.random()*13},${45+Math.random()*15})`;x.fillRect(xx+off,y,33,24);x.strokeStyle='rgba(8,12,18,.65)';x.strokeRect(xx+off,y,33,24)}}const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.colorSpace=THREE.SRGBColorSpace;t.repeat.set(5,5);return t}
+const stoneMap=texStone(false),stoneBump=texStone(true),roofMap=texRoof();
+const mat={stone:new THREE.MeshStandardMaterial({map:stoneMap,bumpMap:stoneBump,bumpScale:.18,roughness:.92,metalness:.02,color:0xb8bbc0}),stoneDark:new THREE.MeshStandardMaterial({map:stoneMap,bumpMap:stoneBump,bumpScale:.12,roughness:.96,color:0x686d74}),roof:new THREE.MeshStandardMaterial({map:roofMap,roughness:.82,metalness:.08,color:0x69717e}),win:new THREE.MeshStandardMaterial({color:0xffc65c,emissive:0xff9e28,emissiveIntensity:1.35,roughness:.35}),wood:new THREE.MeshStandardMaterial({color:0x4a3120,roughness:.8}),metal:new THREE.MeshStandardMaterial({color:0x575f67,metalness:.62,roughness:.48}),glass:new THREE.MeshPhysicalMaterial({color:0x9fcac9,transparent:true,opacity:.28,roughness:.2,metalness:.03,side:THREE.DoubleSide}),green:new THREE.MeshStandardMaterial({color:0x244536,roughness:.92}),green2:new THREE.MeshStandardMaterial({color:0x152d25,roughness:.94}),rock:new THREE.MeshStandardMaterial({map:stoneMap,bumpMap:stoneBump,bumpScale:.35,color:0x4c5057,roughness:1}),water:new THREE.MeshStandardMaterial({color:0x102d47,roughness:.28,metalness:.18,transparent:true,opacity:.92})};
+
+scene.add(new THREE.HemisphereLight(0x8fb4e5,0x35323a,2.0));const moon=new THREE.DirectionalLight(0xc9ddff,3.3);moon.position.set(-35,55,32);moon.castShadow=true;moon.shadow.mapSize.set(1536,1536);moon.shadow.camera.left=-45;moon.shadow.camera.right=45;moon.shadow.camera.top=45;moon.shadow.camera.bottom=-45;scene.add(moon);const warm=new THREE.DirectionalLight(0xffc987,1.0);warm.position.set(32,20,38);scene.add(warm);const fill=new THREE.DirectionalLight(0x6fa4e6,1.4);fill.position.set(20,14,-38);scene.add(fill);
+
+const world=new THREE.Group();scene.add(world);const castle=new THREE.Group();castle.position.y=5.8;world.add(castle);let objectN=0;
+function add(g,m,p=[0,0,0],r=[0,0,0],par=castle,shadow=true){const o=new THREE.Mesh(g,m);o.position.set(...p);o.rotation.set(...r);o.castShadow=shadow;o.receiveShadow=shadow;par.add(o);objectN++;return o}
+function cyl(r,h,seg=20){return new THREE.CylinderGeometry(r,r,h,seg)}function box(x,y,z){return new THREE.BoxGeometry(x,y,z)}
+function roofPrism(w,d,h){const v=new Float32Array([-w/2,0,-d/2,w/2,0,-d/2,0,h,-d/2,-w/2,0,d/2,w/2,0,d/2,0,h,d/2]);const idx=[0,1,2,3,5,4,0,3,4,0,4,1,1,4,5,1,5,2,2,5,3,2,3,0];const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(v,3));g.setIndex(idx);g.computeVertexNormals();return g}
+function gothicWindow(par,x,y,z,ry=0,s=1){const sh=new THREE.Shape();sh.moveTo(-.22*s,-.42*s);sh.lineTo(.22*s,-.42*s);sh.lineTo(.22*s,.10*s);sh.quadraticCurveTo(.18*s,.34*s,0,.52*s);sh.quadraticCurveTo(-.18*s,.34*s,-.22*s,.10*s);sh.closePath();const g=new THREE.ShapeGeometry(sh);const o=new THREE.Mesh(g,mat.win);o.position.set(x,y,z);o.rotation.y=ry;par.add(o);objectN++;return o}
+function battlements(par,w,d,y,countX=8,countZ=5){for(let i=0;i<countX;i++){const x=-w/2+(i+.5)*w/countX;add(box(.35,.5,.4),mat.stone,[x,y,-d/2],[],par,false);add(box(.35,.5,.4),mat.stone,[x,y,d/2],[],par,false)}for(let j=1;j<countZ-1;j++){const z=-d/2+j*d/(countZ-1);add(box(.4,.5,.35),mat.stone,[-w/2,y,z],[],par,false);add(box(.4,.5,.35),mat.stone,[w/2,y,z],[],par,false)}}
+function buttress(par,x,z,y,h,side='x'){const o=add(box(.65,h,.8),mat.stone,[x,y+h/2,z],[],par);o.rotation[side==='x'?'z':'x']=side==='x'?(x>0?-.13:.13):(z>0?.13:-.13)}
+function squareTower(par,x,z,w=3.8,h=13,roofH=5){add(box(w,h,w),mat.stone,[x,h/2,z],[],par);battlements(par,w,w,h+.15,7,7);const rg=roofPrism(w*1.18,w*1.18,roofH);const roof=add(rg,mat.roof,[x,h+.15,z],[0,Math.PI/2,0],par);for(let yy=2.2;yy<h-1;yy+=2.25){gothicWindow(par,x,yy,z+w/2+.012,0,.72);gothicWindow(par,x,yy,z-w/2-.012,Math.PI,.72);gothicWindow(par,x+w/2+.012,yy,z,Math.PI/2,.72);gothicWindow(par,x-w/2-.012,yy,z,-Math.PI/2,.72)}add(cyl(.07,1.6,8),mat.metal,[x,h+roofH+1,z],[],par,false);add(new THREE.SphereGeometry(.13,8,8),mat.metal,[x,h+roofH+1.75,z],[],par,false)}
+function roundTower(par,x,z,r=2.1,h=15,roofH=6){add(cyl(r,h,24),mat.stone,[x,h/2,z],[],par);add(new THREE.ConeGeometry(r*1.22,roofH,24),mat.roof,[x,h+roofH/2,z],[],par);for(let yy=2.5;yy<h-1;yy+=2.4)for(let a=0;a<8;a++){const an=a*Math.PI/4;gothicWindow(par,x+Math.sin(an)*(r+.01),yy,z+Math.cos(an)*(r+.01),an,.62)}for(let a=0;a<16;a++){const an=a*Math.PI/8;add(box(.28,.48,.35),mat.stone,[x+Math.sin(an)*(r+.06),h+.12,z+Math.cos(an)*(r+.06)],[0,an,0],par,false)}add(cyl(.065,1.4,8),mat.metal,[x,h+roofH+.7,z],[],par,false)}
+function hall(par,x,z,w=9,d=18,h=8,roofH=4.8){add(box(w,h,d),mat.stone,[x,h/2,z],[],par);add(roofPrism(w*1.08,d*1.03,roofH),mat.roof,[x,h,z],[],par);for(let zz=-d/2+1.3;zz<d/2-1;zz+=2.4){gothicWindow(par,x+w/2+.012,3.4,z+zz,Math.PI/2,1.15);gothicWindow(par,x-w/2-.012,3.4,z+zz,-Math.PI/2,1.15);gothicWindow(par,x+w/2+.012,6.0,z+zz,Math.PI/2,.88);gothicWindow(par,x-w/2-.012,6.0,z+zz,-Math.PI/2,.88);buttress(par,x+w/2+.45,z+zz,.1,7.0,'x');buttress(par,x-w/2-.45,z+zz,.1,7.0,'x')}for(let xx=-w/2+1;xx<w/2;xx+=1.35)gothicWindow(par,x+xx,3.8,z+d/2+.012,0,1.02);for(let i=0;i<5;i++)add(box(.45,2.2,.55),mat.stone,[x-w/2+1+i*1.7,h+1.1,z-d*.15],[],par,false)}
+function archBridge(par,x0,z0,n=8,span=2.6,height=6,depth=1.45){for(let i=0;i<=n;i++)add(box(.48,height,depth),mat.stone,[x0+i*span,height/2,z0],[],par);for(let i=0;i<n;i++){const tor=new THREE.TorusGeometry(span*.48,.22,8,24,Math.PI);const a=add(tor,mat.stone,[x0+(i+.5)*span,height*.48,z0],[0,0,0],par);add(box(span,.42,depth),mat.stone,[x0+(i+.5)*span,height-.15,z0],[],par)}battlements(par,n*span,depth,height+.15,n*2+2,2)}
+
+// Cliff / plateau
+const cliff=new THREE.Group();world.add(cliff);for(let k=0;k<5;k++){const rr=18-k*.8,hh=2.2;const g=new THREE.CylinderGeometry(rr,rr+1.8,hh,48,1,false);const a=g.attributes.position;for(let i=0;i<a.count;i++){const x=a.getX(i),z=a.getZ(i),ang=Math.atan2(z,x);const j=(Math.sin(ang*7+k*1.4)+Math.sin(ang*13-k*.7))*.28;a.setX(i,x*(1+j*.035));a.setZ(i,z*(1+j*.035))}g.computeVertexNormals();add(g,mat.rock,[0,-4.7+k*2.05,0],[],cliff)}
+// Water
+const waterG=new THREE.PlaneGeometry(150,150,70,70);waterG.rotateX(-Math.PI/2);const water=add(waterG,mat.water,[0,-5.35,0],[],world,false);const baseY=waterG.attributes.position.array.slice();
+// Stars
+const pts=[];for(let i=0;i<700;i++){const a=Math.random()*Math.PI*2,r=100+Math.random()*35,h=18+Math.random()*65;pts.push(new THREE.Vector3(Math.cos(a)*r,h,Math.sin(a)*r))}const starG=new THREE.BufferGeometry().setFromPoints(pts);world.add(new THREE.Points(starG,new THREE.PointsMaterial({color:0xd7e6ff,size:.13,transparent:true,opacity:.82})));
+const moonBall=add(new THREE.SphereGeometry(2.3,24,18),new THREE.MeshBasicMaterial({color:0xe8efff}),[-52,42,-64],[],world,false);
+
+// Castle architecture
+hall(castle,-5,1,9.5,19,8.8,5.2); // Great Hall
+roundTower(castle,-10,7,2.25,15.2,6.1);roundTower(castle,-10,-7,2.05,13.6,5.4);
+squareTower(castle,3.5,1,5.2,11.4,4.7);squareTower(castle,8.2,4.5,3.6,14.2,5.3);squareTower(castle,8.2,-3.2,3.6,14.2,5.3);
+roundTower(castle,3.5,-7,2.15,17.0,6.8);roundTower(castle,11,-8.5,2.45,22.0,7.8); // astronomy
+roundTower(castle,-1.2,-8.2,1.7,12.3,5.0);roundTower(castle,12,2,1.75,13.2,5.2);roundTower(castle,1.2,7.5,1.45,11,4.3);
+// central ranges
+add(box(8,6.7,5.2),mat.stone,[2.5,3.35,-3.2],[],castle);add(roofPrism(8.4,5.5,3.8),mat.roof,[2.5,6.7,-3.2],[],castle);for(let x=-.3;x<5.7;x+=1.2){gothicWindow(castle,x,3.0,-.59,0,.72);gothicWindow(castle,x,5.1,-.59,0,.55)}
+add(box(7,6.0,4.2),mat.stone,[4.0,3.0,6.0],[],castle);add(roofPrism(7.4,4.5,3.2),mat.roof,[4,6,6],[],castle);for(let x=1.3;x<7;x+=1.1)gothicWindow(castle,x,3.1,8.11,0,.67);
+// courtyard cloister
+for(let i=0;i<7;i++){const x=-.5+i*1.5;add(box(.28,3.2,.5),mat.stone,[x,1.6,9.5],[],castle);const t=new THREE.TorusGeometry(.67,.13,8,22,Math.PI);add(t,mat.stone,[x+.75,2.2,9.5],[],castle)}add(box(10.5,.38,1),mat.stone,[4,3.15,9.5],[],castle);
+// bridge from castle
+archBridge(castle,10.5,9.2,7,2.3,6.2,1.25);
+// lower boat house
+const boat=new THREE.Group();boat.position.set(-3,-4.0,15.2);world.add(boat);add(box(6.8,2.4,3.5),mat.stone,[0,1.2,0],[],boat);add(roofPrism(7.2,3.8,2.8),mat.roof,[0,2.4,0],[],boat);for(let x=-2.1;x<=2.1;x+=1.4)gothicWindow(boat,x,1.25,1.76,0,.62);
+// stair / path
+for(let i=0;i<17;i++)add(box(2.4,.22,1.0),mat.stone,[-4.2+i*.48,-3.7+i*.45,12.5-i*.48],[0,.12,0],world,false);
+// greenhouse
+const gh=new THREE.Group();gh.position.set(10.5,6.0,8.5);world.add(gh);for(let k=0;k<3;k++){const g=new THREE.CylinderGeometry(1.5,1.5,5,20,1,true,0,Math.PI);const o=add(g,mat.glass,[k*3.0,1.3,0],[0,0,Math.PI/2],gh,false);for(let i=0;i<6;i++)add(box(.05,2.7,.08),mat.metal,[k*3+i*.0,1.3,-1.45+i*.58],[],gh,false)}
+// foreground lamps on castle edges
+for(let i=0;i<12;i++){const a=i/12*Math.PI*2;const x=Math.cos(a)*14.2,z=Math.sin(a)*14.2;add(cyl(.05,.9,8),mat.metal,[x,.45,z],[],castle,false);const bulb=add(new THREE.SphereGeometry(.11,8,8),mat.win,[x,.95,z],[],castle,false);if(i%3===0){const l=new THREE.PointLight(0xffad4a,.65,8,2);l.position.set(x,1,z);castle.add(l)}}
+// chimneys
+for(const [x,z,h] of [[-6,-2,12],[-3,4,11],[1,3,9],[6,6,10],[7,-1,12]]){add(box(.55,2.3,.55),mat.stone,[x,h,z],[],castle,false);add(box(.75,.2,.75),mat.stone,[x,h+1.2,z],[],castle,false)}
+// forest instanced
+const treeG=new THREE.ConeGeometry(.75,3.8,7);const treeM=mat.green2;const trees=new THREE.InstancedMesh(treeG,treeM,360);const dummy=new THREE.Object3D();let ti=0;for(let i=0;i<500&&ti<360;i++){const a=Math.random()*Math.PI*2,r=22+Math.random()*42;if(Math.abs(Math.cos(a)*r)<18&&Math.abs(Math.sin(a)*r)<18)continue;dummy.position.set(Math.cos(a)*r,-3.1+Math.random()*.8,Math.sin(a)*r);const s=.7+Math.random()*1.5;dummy.scale.set(s,s,s);dummy.rotation.y=Math.random()*6.28;dummy.updateMatrix();trees.setMatrixAt(ti++,dummy.matrix)}trees.count=ti;world.add(trees);
+// small owls / birds
+const birds=[];for(let i=0;i<7;i++){const b=new THREE.Group();b.position.set(-18+i*5,18+Math.random()*8,-8+Math.random()*14);const wing1=add(box(.8,.05,.22),mat.wood,[-.42,0,0],[0,0,.25],b,false);const wing2=add(box(.8,.05,.22),mat.wood,[.42,0,0],[0,0,-.25],b,false);world.add(b);birds.push({b,ph:Math.random()*6,s:.08+Math.random()*.04})}
+
+const views=[
+{name:'湖面正面',desc:'先看最重要的一關：從黑湖方向望向城堡，Great Hall、主塔群、連拱、懸崖與窗光要形成清楚建築層次。',p:[42,27,54],t:[0,10,0]},
+{name:'高地背面',desc:'檢查背面是否仍是完整建築，而不是只為正面做的佈景板。',p:[-46,31,-46],t:[1,10,0]},
+{name:'左側',desc:'看 Great Hall 的長向立面、扶壁與塔群前後距離。',p:[-62,22,15],t:[0,9,0]},
+{name:'右側',desc:'看 Astronomy Tower、鐘塔、橋梁與溫室是否仍保持合理比例。',p:[59,25,-17],t:[2,10,0]},
+{name:'俯視',desc:'檢查整個城堡的平面布局、庭院、主體量體與橋梁位置。',p:[.1,72,.1],t:[0,5,0]}
+];let vi=0,isNight=true;const viewsEl=document.getElementById('views'),viewName=document.getElementById('viewName'),viewDesc=document.getElementById('viewDesc');
+views.forEach((v,i)=>{const b=document.createElement('button');b.className='view';b.textContent=v.name;b.addEventListener('click',()=>go(i));viewsEl.appendChild(b)});function go(i){vi=i;const v=views[i];camera.position.set(...v.p);controls.target.set(...v.t);controls.update();viewName.textContent=v.name;viewDesc.textContent=v.desc;[...viewsEl.children].forEach((b,j)=>b.classList.toggle('on',j===i))}go(0);
+function zoom(f){const d=camera.position.clone().sub(controls.target).multiplyScalar(f);camera.position.copy(controls.target).add(d);controls.update()}document.getElementById('zin').onclick=()=>zoom(.82);document.getElementById('zout').onclick=()=>zoom(1.22);document.getElementById('next').onclick=()=>go((vi+1)%views.length);document.getElementById('reset').onclick=()=>go(0);const auto=document.getElementById('auto');auto.onclick=()=>{controls.autoRotate=!controls.autoRotate;controls.autoRotateSpeed=.45;auto.classList.toggle('on',controls.autoRotate)};
+const day=document.getElementById('day'),modeTxt=document.getElementById('modeTxt');day.onclick=()=>{isNight=!isNight;day.classList.toggle('on',isNight);modeTxt.textContent=isNight?'夜景':'薄暮';scene.background.setHex(isNight?0x0a1424:0x7b8fa5);scene.fog.color.setHex(isNight?0x0c1625:0x8295a9);renderer.toneMappingExposure=isNight?1.18:1.34;moon.intensity=isNight?3.3:1.6;warm.intensity=isNight?1.0:2.3;fill.intensity=isNight?1.4:1.0;mat.win.emissiveIntensity=isNight?1.35:.55;starG.visible=isNight;moonBall.visible=isNight};
+
+document.getElementById('count').textContent=(objectN+ti+700).toLocaleString();
+function resize(){const w=stage.clientWidth,h=stage.clientHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix()}window.addEventListener('resize',resize,{passive:true});resize();loading.style.display='none';
+const clock=new THREE.Clock(),wp=waterG.attributes.position;function loop(){const t=clock.getElapsedTime();for(let i=0;i<wp.count;i++){const x=wp.getX(i),z=wp.getZ(i);wp.setY(i,baseY[i*3+1]+Math.sin(x*.12+t*.45)*.12+Math.cos(z*.1-t*.38)*.08)}wp.needsUpdate=true;for(const o of birds){o.b.position.x+=o.s;if(o.b.position.x>38)o.b.position.x=-38;o.b.position.y+=Math.sin(t*2+o.ph)*.002;o.b.rotation.y=.2*Math.sin(t*.4+o.ph)}controls.update();renderer.render(scene,camera);requestAnimationFrame(loop)}loop();
+}catch(e){console.error(e);loading.style.display='none';errorBox.style.display='flex'}
+</script>
+</body></html>
