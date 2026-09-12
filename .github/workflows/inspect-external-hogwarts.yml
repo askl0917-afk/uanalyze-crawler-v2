@@ -14,10 +14,10 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
-      - name: Install Blender and Git LFS
+      - name: Install Blender, NumPy and Git LFS
         run: |
           sudo apt-get update
-          sudo apt-get install -y blender git-lfs libegl1 libgl1-mesa-dri libglx-mesa0 xvfb
+          sudo apt-get install -y blender python3-numpy git-lfs libegl1 libgl1-mesa-dri libglx-mesa0 xvfb
           git lfs install
           blender --version
       - name: Fetch public Hogwarts GLB reference with Git LFS
@@ -36,14 +36,16 @@ jobs:
         run: xvfb-run -a blender -b --python hogwarts_external/inspect_hogwarts.py
       - name: Show stats
         run: |
+          test -f hogwarts_external/output/stats.json
           cat hogwarts_external/output/stats.json
           ls -lh hogwarts_external/output
       - name: Upload validation artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: hogwarts-high-detail-inspection
           path: |
             hogwarts_external/output/*.png
             hogwarts_external/output/stats.json
+          if-no-files-found: warn
           retention-days: 14
-# inspection trigger 1
