@@ -56,26 +56,29 @@ with open(os.path.join(OUT,'stats.json'),'w') as f: json.dump(stats,f,indent=2)
 print(json.dumps(stats,indent=2))
 
 scene=bpy.context.scene
-scene.render.engine='BLENDER_EEVEE'
+# Blender 4.2+ renamed Eevee to BLENDER_EEVEE_NEXT.
+try:
+    scene.render.engine='BLENDER_EEVEE_NEXT'
+except Exception:
+    scene.render.engine='BLENDER_WORKBENCH'
 scene.render.resolution_x=1280
 scene.render.resolution_y=720
 scene.render.resolution_percentage=100
 scene.render.image_settings.file_format='PNG'
 scene.render.film_transparent=False
 scene.world.color=(0.055,0.065,0.08)
-try:
-    scene.eevee.taa_render_samples=32
-    scene.eevee.use_gtao=True
-    scene.eevee.gtao_distance=maxdim*.08
-    scene.eevee.gtao_factor=1.35
-except Exception:
-    pass
 
 # Neutral inspection floor, placed just under model.
 bpy.ops.mesh.primitive_plane_add(size=maxdim*6,location=(center.x,center.y,mins.z-maxdim*.012))
 floor=bpy.context.object
 floor.name='InspectionFloor'
-mat=bpy.data.materials.new('InspectionFloorMat'); mat.diffuse_color=(0.11,0.12,0.14,1)
+mat=bpy.data.materials.new('InspectionFloorMat')
+mat.diffuse_color=(0.11,0.12,0.14,1)
+mat.use_nodes=True
+bsdf=mat.node_tree.nodes.get('Principled BSDF')
+if bsdf:
+    bsdf.inputs['Base Color'].default_value=(0.11,0.12,0.14,1)
+    bsdf.inputs['Roughness'].default_value=.95
 floor.data.materials.append(mat)
 
 # Studio lighting.
@@ -83,9 +86,9 @@ bpy.ops.object.light_add(type='SUN', location=(center.x-maxdim,center.y-maxdim,c
 sun=bpy.context.object; sun.data.energy=2.2
 sun.rotation_euler=(math.radians(32),math.radians(-18),math.radians(-38))
 bpy.ops.object.light_add(type='AREA', location=(center.x-maxdim*.8,center.y-maxdim*.9,center.z+maxdim*1.4))
-key=bpy.context.object; key.data.energy=1800; key.data.size=maxdim*1.5
+key=bpy.context.object; key.data.energy=1800; key.data.shape='DISK'; key.data.size=maxdim*1.5
 bpy.ops.object.light_add(type='AREA', location=(center.x+maxdim*.8,center.y+maxdim*.5,center.z+maxdim*.7))
-fill=bpy.context.object; fill.data.energy=900; fill.data.size=maxdim*1.2
+fill=bpy.context.object; fill.data.energy=900; fill.data.shape='DISK'; fill.data.size=maxdim*1.2
 
 def point_at(obj,target):
     obj.rotation_euler=(Vector(target)-obj.location).to_track_quat('-Z','Y').to_euler()
@@ -95,8 +98,8 @@ point_at(key,center); point_at(fill,center)
 def render_view(name,dirv):
     d=Vector(dirv).normalized()
     loc=center+d*maxdim*2.6
-    # Raise horizontal views slightly to expose courtyards without distorting silhouette.
-    if abs(d.z)<0.2: loc.z += dims.z*.08
+    if abs(d.z)<0.2:
+        loc.z += dims.z*.08
     bpy.ops.object.camera_add(location=loc)
     cam=bpy.context.object; cam.name='CAM_'+name
     cam.data.type='ORTHO'
@@ -106,6 +109,8 @@ def render_view(name,dirv):
     scene.camera=cam
     scene.render.filepath=os.path.join(OUT,name+'.png')
     bpy.ops.render.render(write_still=True)
+    if not os.path.exists(scene.render.filepath):
+        raise RuntimeError('Render missing: '+scene.render.filepath)
     bpy.data.objects.remove(cam,do_unlink=True)
 
 views={
@@ -122,6 +127,4 @@ views={
 for name,d in views.items():
     render_view(name,d)
 
-# Save an inspection blend without re-exporting / redistributing the source asset.
-bpy.ops.wm.save_as_mainfile(filepath=os.path.join(OUT,'inspection_scene.blend'))
 print('DONE',OUT)
