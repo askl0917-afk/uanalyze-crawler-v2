@@ -1,0 +1,59 @@
+name: Inspect External Hogwarts GLB
+
+on:
+  push:
+    branches: [hogwarts-blender-v1]
+    paths:
+      - 'hogwarts_external/**'
+      - '.github/workflows/inspect-external-hogwarts.yml'
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-lfs libegl1 libgl1-mesa-dri libglx-mesa0 libxrender1 libxi6 libxkbcommon0 xvfb xz-utils curl
+          git lfs install
+      - name: Download official Blender 4.5.13 LTS with bundled Draco
+        run: |
+          curl -L --retry 3 --retry-delay 2 -o /tmp/blender.tar.xz https://download.blender.org/release/Blender4.5/blender-4.5.13-linux-x64.tar.xz
+          mkdir -p /tmp/blender
+          tar -xJf /tmp/blender.tar.xz -C /tmp/blender --strip-components=1
+          /tmp/blender/blender --version
+          echo 'Bundled Draco files:'
+          find /tmp/blender -iname '*draco*' -o -iname 'libextern_draco*' | head -50
+          test -x /tmp/blender/blender
+      - name: Fetch public Hogwarts GLB reference with Git LFS
+        run: |
+          rm -rf external/Story-map
+          git clone --depth 1 https://github.com/maartencoppens/Story-map.git external/Story-map
+          cd external/Story-map
+          git lfs pull --include='public/3D-Model/Hogwarts.glb' --exclude='*'
+          ls -lh public/3D-Model/Hogwarts.glb
+          file public/3D-Model/Hogwarts.glb
+          test $(wc -c < public/3D-Model/Hogwarts.glb) -gt 1000000
+      - name: Render neutral validation views
+        env:
+          HOGWARTS_GLB: external/Story-map/public/3D-Model/Hogwarts.glb
+          HOGWARTS_OUT: hogwarts_external/output
+        run: xvfb-run -a /tmp/blender/blender -b --python hogwarts_external/inspect_hogwarts.py
+      - name: Show stats
+        run: |
+          test -f hogwarts_external/output/stats.json
+          cat hogwarts_external/output/stats.json
+          ls -lh hogwarts_external/output
+      - name: Upload validation artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hogwarts-high-detail-inspection
+          path: |
+            hogwarts_external/output/*.png
+            hogwarts_external/output/stats.json
+          if-no-files-found: warn
+          retention-days: 14

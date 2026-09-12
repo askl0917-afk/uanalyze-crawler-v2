@@ -1,0 +1,64 @@
+name: Fetch Hogwarts Reference Asset
+
+on:
+  push:
+    branches: [hogwarts-blender-v1]
+    paths:
+      - '.github/workflows/fetch-hogwarts-reference.yml'
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe public model sources
+        shell: bash
+        run: |
+          set -u
+          mkdir -p hogwarts_asset
+          UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/126 Safari/537.36'
+
+          probe () {
+            name="$1"; url="$2"
+            echo "===== $name =====" | tee -a hogwarts_asset/probe.txt
+            code=$(curl -L -sS --max-time 40 -A "$UA" -w '%{http_code}' -o "hogwarts_asset/$name" "$url" || true)
+            echo "HTTP=$code URL=$url" | tee -a hogwarts_asset/probe.txt
+            file "hogwarts_asset/$name" | tee -a hogwarts_asset/probe.txt || true
+            wc -c "hogwarts_asset/$name" | tee -a hogwarts_asset/probe.txt || true
+            head -c 300 "hogwarts_asset/$name" | tr '\n' ' ' | tee -a hogwarts_asset/probe.txt || true
+            echo | tee -a hogwarts_asset/probe.txt
+          }
+
+          probe thing_api.json 'https://api.thingiverse.com/things/4707577'
+          probe thing_files_api.json 'https://api.thingiverse.com/things/4707577/files'
+          probe thing_files_page.html 'https://www.thingiverse.com/thing:4707577/files'
+          probe thing_zip.bin 'https://www.thingiverse.com/thing:4707577/zip'
+          probe go3d_page.html 'https://3dgo.app/models/thingiverse/4707577'
+
+          python - <<'PY'
+          from pathlib import Path
+          import re, json, zipfile
+          out=[]
+          for fn in ['thing_api.json','thing_files_api.json','thing_files_page.html','go3d_page.html']:
+              p=Path('hogwarts_asset')/fn
+              if not p.exists(): continue
+              s=p.read_text(errors='ignore')
+              urls=sorted(set(re.findall(r'https?://[^"\'<>\\ ]+',s)))
+              stl=[u for u in urls if any(x in u.lower() for x in ('.stl','.obj','.zip','download','cdn.thingiverse'))]
+              out.append({'file':fn,'candidate_urls':stl[:200]})
+              # Also capture quoted relative links likely to be downloads
+              rel=sorted(set(re.findall(r'["\']([^"\']*(?:download|\.stl|\.obj|\.zip)[^"\']*)["\']',s,re.I)))
+              out[-1]['relative_candidates']=rel[:200]
+          Path('hogwarts_asset/candidates.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          p=Path('hogwarts_asset/thing_zip.bin')
+          print('THING_ZIP_VALID',zipfile.is_zipfile(p) if p.exists() else False)
+          print(Path('hogwarts_asset/candidates.json').read_text())
+          PY
+      - name: Upload diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: hogwarts-public-reference
+          path: hogwarts_asset/**
+          retention-days: 7

@@ -1,0 +1,36 @@
+name: Build Hogwarts Geometry V1
+
+on:
+  push:
+    branches: [hogwarts-blender-v1]
+    paths:
+      - 'hogwarts_blender/**'
+      - '.github/workflows/build-hogwarts.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'hogwarts_blender/**'
+      - '.github/workflows/build-hogwarts.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Blender and headless graphics dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y blender libegl1 libgl1-mesa-dri libglx-mesa0 xvfb
+          blender --version
+      - name: Build GLB and validation renders
+        run: xvfb-run -a blender -b --python hogwarts_blender/build_hogwarts.py
+      - name: List outputs
+        run: ls -lh hogwarts_blender/output
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hogwarts-geometry-v1
+          path: hogwarts_blender/output/*
+          retention-days: 14
