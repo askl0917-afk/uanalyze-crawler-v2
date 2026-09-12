@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Hogwarts Production Viewer V2</title>
+<script src="https://static.sketchfab.com/api/sketchfab-viewer-1.12.1.js"></script>
+<style>
+:root{--bg:#060912;--panel:rgba(8,12,20,.82);--line:rgba(255,255,255,.14);--text:#f4efe6;--muted:#aeb7c7;--gold:#d9b866;--ok:#9dd7a9}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:var(--bg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif;color:var(--text)}
+#stage{position:fixed;inset:0;background:#050810}#api-frame{width:100%;height:100%;border:0;display:block}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);box-shadow:0 12px 34px rgba(0,0,0,.32)}
+#top{position:fixed;z-index:20;top:max(8px,env(safe-area-inset-top));left:max(8px,env(safe-area-inset-left));right:max(8px,env(safe-area-inset-right));display:flex;justify-content:space-between;gap:8px;pointer-events:none}
+#brand{padding:9px 11px;max-width:min(72vw,560px)}#brand b{font-size:14px}#brand small{display:block;margin-top:3px;color:var(--muted);font-size:10px;line-height:1.35}
+#tools{display:flex;gap:7px;pointer-events:auto}.tool{width:44px;height:44px;border:1px solid var(--line);border-radius:12px;background:rgba(16,23,35,.94);color:var(--text);font-size:15px;font-weight:700}
+#views{position:fixed;z-index:18;left:max(8px,env(safe-area-inset-left));right:max(8px,env(safe-area-inset-right));bottom:max(8px,env(safe-area-inset-bottom));display:flex;gap:7px;padding:8px;overflow-x:auto;scrollbar-width:none}.viewBtn{flex:0 0 auto;min-height:44px;padding:8px 11px;border-radius:11px;border:1px solid var(--line);background:#141c29;color:var(--text);font-size:12px}.viewBtn.active{border-color:#b99a56;background:#332a18;color:#ffe3a1}#views::-webkit-scrollbar{display:none}
+#status{position:fixed;z-index:17;left:max(10px,env(safe-area-inset-left));bottom:72px;padding:8px 10px;font-size:10px;color:var(--muted);max-width:min(520px,calc(100vw - 20px))}
+#reference{position:fixed;z-index:30;right:max(8px,env(safe-area-inset-right));top:68px;width:min(42vw,430px);max-height:72vh;padding:8px;display:none}.refHead{display:flex;justify-content:space-between;align-items:center;padding:2px 3px 8px;font-size:11px;color:var(--muted)}#reference img{display:block;width:100%;height:auto;border-radius:10px;border:1px solid rgba(255,255,255,.12)}#reference .note{font-size:9px;line-height:1.4;color:var(--muted);padding:8px 3px 2px}.close{border:0;background:transparent;color:var(--text);font-size:18px}
+#loading{position:fixed;z-index:40;inset:0;display:flex;align-items:center;justify-content:center;background:#060912;color:#c8d0dc;text-align:center;font-size:13px}.spin{width:34px;height:34px;border:3px solid #263244;border-top-color:var(--gold);border-radius:50%;margin:0 auto 12px;animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+.hidden #brand,.hidden #views,.hidden #status{display:none}.hidden #top{justify-content:flex-end}
+@media (max-width:700px){#reference{left:8px;right:8px;top:auto;bottom:72px;width:auto;max-height:43vh;overflow:auto}#reference img{max-height:30vh;object-fit:contain}}
+</style>
+</head>
+<body>
+<div id="stage"><iframe id="api-frame" title="Hogwarts 3D production viewer" allow="autoplay; fullscreen; xr-spatial-tracking" allowfullscreen></iframe></div>
+<div id="loading"><div><div class="spin"></div>載入高精度霍格華茲 3D…</div></div>
+<div id="top">
+  <div id="brand" class="panel"><b>霍格華茲｜Production Viewer V2</b><small>Ju Designer 高精度 Mesh 作為目前基準。下方固定視角用於電影輪廓檢查；此版本不假裝已完成幾何重塑。</small></div>
+  <div id="tools"><button class="tool" id="refBtn" aria-label="Reference">參</button><button class="tool" id="homeBtn">⌂</button><button class="tool" id="uiBtn">☰</button></div>
+</div>
+<div id="status" class="panel">模型：Hogwarts 3D — Ju Designer · 約 969.8k triangles · CC Attribution<br><span id="state">初始化中…</span></div>
+<div id="views" class="panel"></div>
+<div id="reference" class="panel"><div class="refHead"><span>電影比例校正參考｜左前 45°</span><button id="closeRef" class="close">×</button></div><img src="https://raw.githubusercontent.com/askl0917-afk/uanalyze-crawler-v2/hogwarts-to3d-source/hogwarts-to3d-source/hogwarts_ref_384.jpg" alt="Hogwarts movie proportion reference"><div class="note">比對重點：Astronomy Tower 高度、Great Hall 長向比例、主塔層級、Viaduct 方向、溫室與臨湖低位建築。這張是校正參考，不是幾何真值。</div></div>
+<script>
+(()=>{
+const UID='70dcec840f8444dda2974aa6a9b049e2';
+const iframe=document.getElementById('api-frame');
+const loading=document.getElementById('loading');
+const state=document.getElementById('state');
+const views=document.getElementById('views');
+const ref=document.getElementById('reference');
+let api=null,home=null,hidden=false,current='自由';
+const client=new Sketchfab('1.12.1',iframe);
+const labels=[['自由','free'],['湖面正面','front'],['左前45°','fl45'],['右前45°','fr45'],['左側','left'],['右側','right'],['背面','back'],['俯視','top']];
+labels.forEach(([txt,key])=>{const b=document.createElement('button');b.className='viewBtn';b.textContent=txt;b.dataset.key=key;b.onclick=()=>go(key,b);views.appendChild(b)});
+function active(btn){[...views.children].forEach(x=>x.classList.toggle('active',x===btn));}
+function len(v){return Math.hypot(v[0],v[1],v[2])||1}
+function rotZ(v,a){const c=Math.cos(a),s=Math.sin(a);return [v[0]*c-v[1]*s,v[0]*s+v[1]*c,v[2]]}
+function move(vec,target,duration=1.25){if(!api)return;api.setCameraLookAt([target[0]+vec[0],target[1]+vec[1],target[2]+vec[2]],target,duration);}
+function go(key,btn){if(!api||!home)return;active(btn);current=key;state.textContent='視角：'+btn.textContent;
+ const p=home.position,t=home.target,v=[p[0]-t[0],p[1]-t[1],p[2]-t[2]],r=len(v),flat=Math.hypot(v[0],v[1])||r,base=Math.atan2(v[1],v[0]);
+ if(key==='free'){api.setCameraLookAt(home.position,home.target,1.0);return;}
+ if(key==='top'){move([0,0,r*1.35],t,1.2);return;}
+ const z=Math.max(r*.12,Math.abs(v[2])*.55);let a=base;
+ if(key==='front')a=base;
+ if(key==='fl45')a=base-Math.PI/4;
+ if(key==='fr45')a=base+Math.PI/4;
+ if(key==='left')a=base-Math.PI/2;
+ if(key==='right')a=base+Math.PI/2;
+ if(key==='back')a=base+Math.PI;
+ move([Math.cos(a)*flat,Math.sin(a)*flat,z],t,1.25);
+}
+client.init(UID,{success:function(a){api=a;api.start();api.addEventListener('viewerready',()=>{api.getCameraLookAt((err,c)=>{if(!err&&c){home={position:c.position.slice(),target:c.target.slice()};state.textContent='就緒｜可自由旋轉或使用固定視角';loading.style.display='none';active(views.children[0]);}else{state.textContent='已載入；固定視角初始化失敗，可直接手動操作';loading.style.display='none';}});});},error:function(){loading.innerHTML='<div>Sketchfab Viewer 載入失敗。請重新整理 Safari。</div>';},autostart:1,preload:1,ui_infos:0,ui_help:0,ui_inspector:0,ui_settings:0,ui_watermark:0,ui_watermark_link:0,ui_annotations:0,ui_controls:1,ui_fullscreen:1});
+document.getElementById('homeBtn').onclick=()=>{if(api&&home){api.setCameraLookAt(home.position,home.target,1);active(views.children[0]);state.textContent='視角：自由';}};
+document.getElementById('refBtn').onclick=()=>{ref.style.display=ref.style.display==='block'?'none':'block'};
+document.getElementById('closeRef').onclick=()=>{ref.style.display='none'};
+document.getElementById('uiBtn').onclick=()=>{hidden=!hidden;document.body.classList.toggle('hidden',hidden)};
+setTimeout(()=>{if(loading.style.display!=='none')state.textContent='載入時間較長，請稍候…'},5000);
+})();
+</script>
+</body>
+</html>
