@@ -1,0 +1,48 @@
+name: Inspect External Hogwarts GLB
+
+on:
+  push:
+    branches: [hogwarts-blender-v1]
+    paths:
+      - 'hogwarts_external/**'
+      - '.github/workflows/inspect-external-hogwarts.yml'
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Blender and Git LFS
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y blender git-lfs libegl1 libgl1-mesa-dri libglx-mesa0 xvfb
+          git lfs install
+          blender --version
+      - name: Fetch public Hogwarts GLB reference with Git LFS
+        run: |
+          rm -rf external/Story-map
+          git clone --depth 1 https://github.com/maartencoppens/Story-map.git external/Story-map
+          cd external/Story-map
+          git lfs pull --include='public/3D-Model/Hogwarts.glb' --exclude='*'
+          ls -lh public/3D-Model/Hogwarts.glb
+          file public/3D-Model/Hogwarts.glb
+          test $(wc -c < public/3D-Model/Hogwarts.glb) -gt 1000000
+      - name: Render neutral validation views
+        env:
+          HOGWARTS_GLB: external/Story-map/public/3D-Model/Hogwarts.glb
+          HOGWARTS_OUT: hogwarts_external/output
+        run: xvfb-run -a blender -b --python hogwarts_external/inspect_hogwarts.py
+      - name: Show stats
+        run: |
+          cat hogwarts_external/output/stats.json
+          ls -lh hogwarts_external/output
+      - name: Upload validation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hogwarts-high-detail-inspection
+          path: |
+            hogwarts_external/output/*.png
+            hogwarts_external/output/stats.json
+          retention-days: 14
