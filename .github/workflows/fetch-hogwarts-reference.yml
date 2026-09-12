@@ -1,0 +1,39 @@
+name: Fetch Hogwarts Reference Asset
+
+on:
+  push:
+    branches: [hogwarts-blender-v1]
+    paths:
+      - '.github/workflows/fetch-hogwarts-reference.yml'
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch Thingiverse public-domain castle model
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p hogwarts_asset
+          URL='https://www.thingiverse.com/thing:4707577/zip'
+          curl -L --retry 3 --retry-delay 2 -A 'Mozilla/5.0' -o hogwarts_asset/model.zip "$URL"
+          file hogwarts_asset/model.zip
+          ls -lh hogwarts_asset/model.zip
+          python - <<'PY'
+          import zipfile, pathlib
+          p=pathlib.Path('hogwarts_asset/model.zip')
+          print('is_zip', zipfile.is_zipfile(p))
+          if zipfile.is_zipfile(p):
+              with zipfile.ZipFile(p) as z:
+                  print('\n'.join(z.namelist()[:100]))
+                  z.extractall('hogwarts_asset/extracted')
+          PY
+      - name: Upload fetched asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: hogwarts-public-reference
+          path: hogwarts_asset/**
+          retention-days: 7
