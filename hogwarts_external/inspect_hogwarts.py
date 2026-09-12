@@ -5,14 +5,12 @@ SRC=os.environ.get('HOGWARTS_GLB','external/Story-map/public/3D-Model/Hogwarts.g
 OUT=os.environ.get('HOGWARTS_OUT','hogwarts_external/output')
 os.makedirs(OUT,exist_ok=True)
 
-# Clear default scene.
 bpy.ops.object.select_all(action='SELECT')
 bpy.ops.object.delete(use_global=False)
 
 print('IMPORT', SRC)
 bpy.ops.import_scene.gltf(filepath=SRC)
 
-# Keep only imported mesh objects for bounds; remove imported cameras/lights to control inspection lighting.
 for o in list(bpy.context.scene.objects):
     if o.type in {'CAMERA','LIGHT'}:
         bpy.data.objects.remove(o, do_unlink=True)
@@ -20,7 +18,13 @@ meshes=[o for o in bpy.context.scene.objects if o.type=='MESH']
 if not meshes:
     raise RuntimeError('No mesh objects found in GLB')
 
-# World-space bounds.
+# Ensure imported geometry is render-visible.
+for o in meshes:
+    o.hide_render=False
+    o.hide_viewport=False
+    try: o.hide_set(False)
+    except Exception: pass
+
 pts=[]
 for o in meshes:
     for c in o.bound_box:
@@ -31,7 +35,6 @@ center=(mins+maxs)/2
 dims=maxs-mins
 maxdim=max(dims)
 
-# Geometry stats.
 triangles=0
 vertices=0
 materials=set()
@@ -56,7 +59,6 @@ with open(os.path.join(OUT,'stats.json'),'w') as f: json.dump(stats,f,indent=2)
 print(json.dumps(stats,indent=2))
 
 scene=bpy.context.scene
-# Blender 4.2+ renamed Eevee to BLENDER_EEVEE_NEXT.
 try:
     scene.render.engine='BLENDER_EEVEE_NEXT'
 except Exception:
@@ -68,7 +70,6 @@ scene.render.image_settings.file_format='PNG'
 scene.render.film_transparent=False
 scene.world.color=(0.055,0.065,0.08)
 
-# Neutral inspection floor, placed just under model.
 bpy.ops.mesh.primitive_plane_add(size=maxdim*6,location=(center.x,center.y,mins.z-maxdim*.012))
 floor=bpy.context.object
 floor.name='InspectionFloor'
@@ -81,7 +82,6 @@ if bsdf:
     bsdf.inputs['Roughness'].default_value=.95
 floor.data.materials.append(mat)
 
-# Studio lighting.
 bpy.ops.object.light_add(type='SUN', location=(center.x-maxdim,center.y-maxdim,center.z+maxdim*2))
 sun=bpy.context.object; sun.data.energy=2.2
 sun.rotation_euler=(math.radians(32),math.radians(-18),math.radians(-38))
@@ -94,7 +94,6 @@ def point_at(obj,target):
     obj.rotation_euler=(Vector(target)-obj.location).to_track_quat('-Z','Y').to_euler()
 point_at(key,center); point_at(fill,center)
 
-# Ortho camera renderer. Views are axis-relative because source orientation may be unknown.
 def render_view(name,dirv):
     d=Vector(dirv).normalized()
     loc=center+d*maxdim*2.6
@@ -103,6 +102,10 @@ def render_view(name,dirv):
     bpy.ops.object.camera_add(location=loc)
     cam=bpy.context.object; cam.name='CAM_'+name
     cam.data.type='ORTHO'
+    # Critical for this asset: default clip_end=1000 clips the entire castle because
+    # the camera sits ~5600 scene units away. Keep a generous depth range.
+    cam.data.clip_start=max(0.1,maxdim*0.0001)
+    cam.data.clip_end=maxdim*20.0
     horizontal=math.sqrt(dims.x*dims.x+dims.y*dims.y)
     cam.data.ortho_scale=max(dims.z*1.45,horizontal*.72)*1.08
     point_at(cam,center+Vector((0,0,dims.z*.05)))
