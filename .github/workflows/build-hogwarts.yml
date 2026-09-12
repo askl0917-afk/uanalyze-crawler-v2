@@ -6,6 +6,11 @@ on:
     paths:
       - 'hogwarts_blender/**'
       - '.github/workflows/build-hogwarts.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'hogwarts_blender/**'
+      - '.github/workflows/build-hogwarts.yml'
   workflow_dispatch:
 
 jobs:
